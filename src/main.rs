@@ -1,77 +1,119 @@
+use futures::future::join_all;
+// use lazy_static::lazy_static;
+// use regex::Regex;
+use reqwest::Client;
 use std::io::SeekFrom;
 use std::sync::Arc;
-use lazy_static::lazy_static;
-use regex::Regex;
-use reqwest::Client;
 use tokio::fs::OpenOptions;
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
-use tokio::sync::Mutex;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
+use tokio::sync::Semaphore;
 
-const BLOCK_SIZE: usize = 8 * 1024 * 1024; // 每个块8MB
+const BLOCK_SIZE: usize = 6 * 1024 * 1024; // 每个块6MB
 
-async fn download_chunk(url: &str, start: usize, end: usize, file_mutex: Arc<Mutex<tokio::fs::File>>) {
+async fn download_chunk(
+    client: Client,
+    url: &str,
+    start: usize,
+    end: usize,
+    tx: tokio::sync::mpsc::Sender<(usize, bytes::Bytes)>,
+    semaphore: Arc<Semaphore>,
+) {
+    let _permit = semaphore.acquire().await;
     let range = format!("bytes={}-{}", start, end);
-    let response = Client::new().get(url).header("Range", range).send().await.expect("Failed to download chunk");
+    let response = client
+        .get(url)
+        .header("Range", range)
+        .send()
+        .await
+        .expect("Failed to download chunk");
     let buffer = response.bytes().await.expect("Failed to read chunk");
 
-    let mut file = file_mutex.lock().await;
-    file.seek(SeekFrom::Start(start as u64)).await.expect("Failed to seek");
-    file.write_all(&buffer).await.expect("Failed to write chunk");
+    tx.send((start,buffer)).await.expect("Failed to send buffer");
+
 }
 
-#[tokio::main]
-async fn main() {
-    let client = Client::new();
-    let thread_count: u16 = 16;
-    let url = "https://alist.gloryouth.com/d/EDU/%E5%AF%B9%E5%A4%96/%E6%88%90%E7%89%87/%E8%8A%82%E7%9B%AE1_%E6%94%B9_ai.mp4";
-    let response = client
-        .head(url)
-        .send()
-        .await.expect("error during request");
-    let total_size = response
-        .headers()
-        .get("Content-Length")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<usize>().ok())
-        .expect("Content-Length is invalid");
-    let num_chunks = (total_size + BLOCK_SIZE - 1) / BLOCK_SIZE; // 相当于有余数则+1
-    let output_path = "output.zip";
-    let file = OpenOptions::new().write(true).create(true).open(output_path).await.expect("Failed to create output file");
-    let file_mutex = Arc::new(Mutex::new(file));
-    let mut tasks = Vec::with_capacity(thread_count as usize);
+fn main() {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(
+            std::thread::available_parallelism() // 系统线程数
+                .expect("Fail to get thread counts")
+                .get(),
+        )
+        .enable_all() // 可在runtime中使用所有功能
+        .build() // 创建runtime
+        .expect("Failed to build tokio runtime");
+    rt.block_on(async {
+        let client = Client::new();
+        let url = "https://alist.gloryouth.com/d/EDU/%E5%AF%B9%E5%A4%96/%E6%88%90%E7%89%87/%E8%8A%82%E7%9B%AE1_%E6%94%B9_ai.mp4";
+        let response = client
+            .head(url)
+            .send()
+            .await.expect("error during request");
+        let total_size = response
+            .headers()
+            .get("Content-Length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<usize>().ok())
+            .expect("Content-Length is invalid");
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, bytes::Bytes)>(50);
+        let num_chunks = (total_size + BLOCK_SIZE - 1) / BLOCK_SIZE; // 相当于有余数则+1
+        let output_path = "output.mp4";
+        let file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(output_path).await.expect("Failed to open output file");
+        let mut file = BufWriter::with_capacity(BLOCK_SIZE, file);
+        let mut tasks = Vec::with_capacity(num_chunks);
 
-    for i in 0..num_chunks {
-        let start = i * BLOCK_SIZE;
-        let end = std::cmp::min(start + BLOCK_SIZE - 1, total_size - 1);
-        let file_mutex = Arc::clone(&file_mutex);
-
-        // 异步下载块
-        let task = tokio::spawn(download_chunk(url, start, end, file_mutex));
-        tasks.push(task);
-    }
-    for task in tasks {
-        task.await.expect("Task failed");
-    }
-    return;
-    match response.headers().get("alt-svc") {
-        None => {
-            let v = response
-                .headers()
-                .get("Content-Length")
-                .and_then(|v| v.to_str().ok());
-            println!("{:?}", v);
-        }
-        Some(str) => {
-            lazy_static! {
-                static ref HASHTAG_REGEX: Regex =
-                    Regex::new(r#"h3="([1-9][0-9]{1,3}|[1-9]|[1-5][0-9]{4}|6553[0-5])""#).unwrap();
+        let write = tokio::spawn(async move {
+            while let Some((start, bytes)) = rx.recv().await {
+                file.seek(SeekFrom::Start(start as u64))
+                    .await
+                    .expect("Failed to seek");
+                file.write_all(&bytes)
+                    .await
+                    .expect("Failed to write chunk");
             }
-            println!(
-                "{}",
-                HASHTAG_REGEX.find(&str.to_str().unwrap()).unwrap().as_str()
-            );
+        });
+
+        let semaphore = Arc::new(Semaphore::new(20)); // 限制为20并发
+
+        for i in 0..num_chunks {
+            let start = i * BLOCK_SIZE;
+            let end = std::cmp::min(start + BLOCK_SIZE - 1, total_size - 1);
+
+
+            // 异步下载块
+            let task = tokio::spawn(download_chunk(client.clone(),url, start, end, tx.clone(), semaphore.clone()));
+            tasks.push(task);
         }
-    }
+
+        join_all(tasks).await;
+        drop(tx);
+        write.await.expect("Failed to write chunk");
+        println!("Done");
+
+        // match response.headers().get("alt-svc") {
+        //     None => {
+        //         let v = response
+        //             .headers()
+        //             .get("Content-Length")
+        //             .and_then(|v| v.to_str().ok());
+        //         println!("{:?}", v);
+        //     }
+        //     Some(str) => {
+        //         lazy_static! {
+        //         static ref HASHTAG_REGEX: Regex =
+        //             Regex::new(r#"h3="([1-9][0-9]{1,3}|[1-9]|[1-5][0-9]{4}|6553[0-5])""#).unwrap();
+        //     }
+        //         println!(
+        //             "{}",
+        //             HASHTAG_REGEX.find(&str.to_str().unwrap()).unwrap().as_str()
+        //         );
+        //     }
+        // }
+    });
+    return;
 }
 
 #[cfg(test)]
