@@ -4,6 +4,7 @@ use futures::future::join_all;
 use reqwest::Client;
 use std::io::SeekFrom;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::fs::OpenOptions;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
 use tokio::sync::Semaphore;
@@ -20,15 +21,24 @@ async fn download_chunk(
 ) {
     let _permit = semaphore.acquire().await;
     let range = format!("bytes={}-{}", start, end);
-    let response = client
-        .get(url)
-        .header("Range", range)
-        .send()
-        .await
-        .expect("Failed to download chunk");
-    let buffer = response.bytes().await.expect("Failed to read chunk");
-
-    tx.send((start,buffer)).await.expect("Failed to send buffer");
+    let mut retries = 0;
+    loop {
+        let _ = client
+            .get(url)
+            .header("Range", &range)
+            .send()
+            .await.map(async |response| {
+            let buffer = response.bytes().await.expect("Failed to read chunk");
+            tx.send((start,buffer)).await.expect("Failed to send buffer");
+        }).map_err(async |_| {
+            retries += 1;
+            tokio::time::sleep(Duration::from_secs(retries)).await
+        });
+        if retries >= 3 {
+            panic!("Too many retries left");
+        }
+    }
+    
 
 }
 
@@ -90,7 +100,7 @@ fn main() {
         for i in 0..num_chunks {
             let start = i * BLOCK_SIZE;
             let end = std::cmp::min(start + BLOCK_SIZE - 1, total_size - 1);
-            
+
             // 异步下载块
             let task = tokio::spawn(download_chunk(client.clone(),url, start, end, tx.clone(), semaphore.clone()));
             tasks.push(task);
