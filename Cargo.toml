@@ -1,0 +1,11 @@
+[package]
+name = "untitled"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+quiche = "0.23.2"
+tokio = { version = "1.43.0", features = ["full"] }
+reqwest = { version = "0.12.12", features = ["default", "h2", "native-tls-alpn"] }
+regex = "1.11.1"
+lazy_static = "1.5.0"
