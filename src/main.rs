@@ -65,14 +65,23 @@ fn main() {
         let mut file = BufWriter::with_capacity(BLOCK_SIZE, file);
         let mut tasks = Vec::with_capacity(num_chunks);
 
+        let mut buffer = std::collections::BTreeMap::new();
+        let mut current_pos = 0;
+
         let write = tokio::spawn(async move {
             while let Some((start, bytes)) = rx.recv().await {
-                file.seek(SeekFrom::Start(start as u64))
-                    .await
-                    .expect("Failed to seek");
-                file.write_all(&bytes)
-                    .await
-                    .expect("Failed to write chunk");
+                buffer.insert(start, bytes);
+                // 检查是否有连续块可写入
+                while let Some((&next_start, bytes)) = buffer.first_key_value() {
+                    if next_start == current_pos {
+                        file.seek(SeekFrom::Start(current_pos as u64)).await.expect("Failed to seek");
+                        file.write_all(bytes).await.expect("Failed to write to file");
+                        current_pos += bytes.len();
+                        buffer.remove(&next_start);
+                    } else {
+                        break;
+                    }
+                }
             }
         });
 
@@ -81,8 +90,7 @@ fn main() {
         for i in 0..num_chunks {
             let start = i * BLOCK_SIZE;
             let end = std::cmp::min(start + BLOCK_SIZE - 1, total_size - 1);
-
-
+            
             // 异步下载块
             let task = tokio::spawn(download_chunk(client.clone(),url, start, end, tx.clone(), semaphore.clone()));
             tasks.push(task);
