@@ -1,6 +1,5 @@
 mod utils;
 
-use std::ops::Deref;
 // use lazy_static::lazy_static;
 // use regex::Regex;
 use crate::utils::ChunkedBuffer;
@@ -162,7 +161,7 @@ fn main() {
         .expect("Failed to build tokio runtime");
     rt.block_on(
         ParallelDownloader::new(
-            "https://ddns.gloryouth.com:10053/d/outer/local/output.mp4".into(),
+            "https://alist.gloryouth.com/d/outer/edu/%E6%88%90%E7%89%87/%E8%8A%82%E7%9B%AE1_%E6%94%B9_ai.mp4".into(),
             "output.mp4".into(),
         )
         .start(20),
