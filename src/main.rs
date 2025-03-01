@@ -1,5 +1,9 @@
+mod utils;
+
+use std::ops::Deref;
 // use lazy_static::lazy_static;
 // use regex::Regex;
+use crate::utils::ChunkedBuffer;
 use std::sync::Arc;
 
 const BLOCK_SIZE: usize = 6 * 1024 * 1024; // 每个块6MB
@@ -49,6 +53,7 @@ impl ParallelDownloader {
         write.await.expect("Write await error");
         println!("Done");
     }
+
     #[inline]
     async fn write(
         output_path: Arc<String>,
@@ -63,12 +68,20 @@ impl ParallelDownloader {
             .await
             .expect("Failed to open output file");
         let mut file = BufWriter::with_capacity(BLOCK_SIZE, file);
+
         tokio::task::spawn(async move {
+            let mut buffer = ChunkedBuffer::new(16);
             while let Some((start, bytes)) = rx.recv().await {
-                file.seek(std::io::SeekFrom::Start(start as u64))
-                    .await
-                    .expect("Failed to seek");
-                file.write_all(&bytes).await.expect("Failed to write chunk");
+                buffer.insert(start, bytes);
+                let mut iter = buffer.iter_full();
+                while let Some(v) = iter.next() {
+                    file.seek(std::io::SeekFrom::Start(start as u64))
+                        .await
+                        .expect("Failed to seek");
+                    file.write_all(v.1.bytes().expect("Failed to get bytes").as_ref())
+                        .await
+                        .expect("Failed to write chunk");
+                }
             }
         })
     }
