@@ -2,7 +2,6 @@
 // use regex::Regex;
 use std::sync::Arc;
 
-
 const BLOCK_SIZE: usize = 6 * 1024 * 1024; // 每个块6MB
 
 struct ParallelDownloader {
@@ -25,9 +24,9 @@ impl ParallelDownloader {
         let total_size = self.get_size().await;
         let (tx, rx) = tokio::sync::mpsc::channel::<(usize, bytes::Bytes)>(50);
         let num_chunks = (total_size + BLOCK_SIZE - 1) / BLOCK_SIZE; // 相当于有余数则+1
-        
-        let mut tasks = Vec::with_capacity(num_chunks);
-        let write = Self::write(self.output_path.clone(),rx);
+
+        let mut tasks = Vec::with_capacity(num_chunks + 1);
+        let write = Self::write(self.output_path.clone(), rx);
 
         let semaphore = Arc::new(tokio::sync::Semaphore::new(threads)); // 限制为20并发
 
@@ -44,16 +43,19 @@ impl ParallelDownloader {
             ));
             tasks.push(task);
         }
+        tasks.push(write.await);
 
         futures::future::join_all(tasks).await;
         drop(tx);
-        tokio::join!(write);
         println!("Done");
     }
     #[inline]
-    async fn write(output_path:Arc<String>, mut rx: tokio::sync::mpsc::Receiver<(usize, bytes::Bytes)>) -> tokio::task::JoinHandle<()> {
+    async fn write(
+        output_path: Arc<String>,
+        mut rx: tokio::sync::mpsc::Receiver<(usize, bytes::Bytes)>,
+    ) -> tokio::task::JoinHandle<()> {
         use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
-        
+
         let file = tokio::fs::OpenOptions::new()
             .write(true)
             .create(true)
@@ -95,7 +97,7 @@ impl ParallelDownloader {
         semaphore: Arc<tokio::sync::Semaphore>,
     ) {
         use futures::TryFutureExt;
-        
+
         let _permit = semaphore.acquire().await;
         let range = format!("bytes={}-{}", start, end);
         let mut retries = 0;
