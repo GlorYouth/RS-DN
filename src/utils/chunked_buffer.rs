@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use std::borrow::Borrow;
-
+use std::collections::HashMap;
 use std::mem::MaybeUninit;
 use std::slice;
 
@@ -74,7 +74,7 @@ impl Chunk {
             Some(Bytes::copy_from_slice(slice))
         }
     }
-
+    
     #[inline]
     unsafe fn index_mut(&mut self, index: usize) -> &mut [u8] {
         let start = index * self.set_len;
@@ -90,11 +90,17 @@ impl Chunk {
     }
 }
 
+impl AsRef<Chunk> for Chunk {
+    fn as_ref(&self) -> &Chunk {
+        self
+    }
+}
+
 #[derive(Debug)]
 pub struct ChunkedBuffer {
     block_size: usize, // 每个块固定的大小
     // 使用 BTreeMap 保存各个块：key 为块编号，value 为块数据（使用 Option<T> 保存，便于记录未填充部分）
-    chunks: Vec<(usize, Chunk)>,
+    chunks: HashMap<usize, Chunk>,
 }
 
 impl ChunkedBuffer {
@@ -102,7 +108,7 @@ impl ChunkedBuffer {
     pub fn new(block_size: usize) -> Self {
         Self {
             block_size,
-            chunks: Vec::with_capacity(50),
+            chunks: HashMap::new(),
         }
     }
 
@@ -110,49 +116,50 @@ impl ChunkedBuffer {
         let block_index = index / self.block_size;
         let pos_in_block = index % self.block_size;
 
-        match self.chunks.iter_mut().find(|v| v.0 == block_index) {
-            Some((_, chunk)) => {
-                chunk.insert(pos_in_block, item);
-            }
-            None => self.chunks.push((
-                pos_in_block,
-                Chunk::new(self.block_size, item.borrow().len()),
-            )),
-        };
+        let block = self
+            .chunks
+            .entry(block_index)
+            .or_insert(Chunk::new(self.block_size, item.borrow().len()));
+        if block.is_some(pos_in_block) {
+            panic!("Index already exists");
+        }
+        block.insert(pos_in_block, item);
     }
 
     #[inline]
     pub fn peek_first_chunk(&self, is_full: bool) -> Option<&Chunk> {
-        for (_, v) in self.chunks.iter().peekable() {
-            if is_full ^ v.is_full() {
+        let mut iter = self.chunks.iter().peekable();
+        loop {
+            let (_, chunk) = iter.next()?;
+            if is_full ^ chunk.is_full() {
                 continue;
             } else {
-                return Some(v);
+                return Some(chunk);
             }
         }
-        None
     }
 
     pub fn take_first_chunk(&mut self, is_full: bool) -> Option<Chunk> {
         // 获取块编号最小的块的 key
 
-        for (k, v) in self.chunks.iter().enumerate() {
-            if is_full ^ v.1.is_full() {
+        let mut keys = self.chunks.keys();
+        loop {
+            let k = Some(*keys.next()?);
+            if is_full ^ self.chunks[&k.unwrap()].is_full() {
                 continue;
             } else {
-                return Some(self.chunks.remove(k).1);
+                return self.chunks.remove(&k.unwrap());
             }
         }
-        None
     }
 
     #[inline]
-    pub fn iter_full(&self) -> impl Iterator<Item = &(usize, Chunk)> {
+    pub fn iter_full(&self) -> impl Iterator<Item = (&usize, &Chunk)> {
         self.chunks.iter().filter(|(_, chunk)| chunk.is_full())
     }
 
     #[inline]
-    pub fn iter_non_full(&self) -> impl Iterator<Item = &(usize, Chunk)> {
+    pub fn iter_non_full(&self) -> impl Iterator<Item = (&usize, &Chunk)> {
         self.chunks.iter().filter(|(_, chunk)| !chunk.is_full())
     }
 }
@@ -191,17 +198,13 @@ mod tests {
         let mut buff = ChunkedBuffer::new(5);
         buff.insert(0, [0]);
         assert_eq!(buff.peek_first_chunk(false).unwrap().avail, 1);
-        unsafe {
-            assert_eq!(*buff.peek_first_chunk(false).unwrap().index(0), [0]);
-        }
+        unsafe { assert_eq!(*buff.peek_first_chunk(false).unwrap().index(0), [0]); }
 
         assert!(buff.peek_first_chunk(true).is_none());
 
         buff.insert(2, [1]);
         assert_eq!(buff.peek_first_chunk(false).unwrap().avail, 0b101);
-        unsafe {
-            assert_eq!(*buff.peek_first_chunk(false).unwrap().index(2), [1]);
-        }
+        unsafe { assert_eq!(*buff.peek_first_chunk(false).unwrap().index(2), [1]); }
 
         assert!(buff.peek_first_chunk(true).is_none());
 
