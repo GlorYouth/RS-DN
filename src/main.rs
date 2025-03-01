@@ -1,20 +1,13 @@
-use futures::future::join_all;
 // use lazy_static::lazy_static;
 // use regex::Regex;
-use futures::TryFutureExt;
-use reqwest::Client;
-use std::io::SeekFrom;
 use std::sync::Arc;
-use std::time::Duration;
-use tokio::fs::OpenOptions;
-use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
-use tokio::sync::Semaphore;
+
 
 const BLOCK_SIZE: usize = 6 * 1024 * 1024; // 每个块6MB
 
 struct ParallelDownloader {
     url: Arc<String>,
-    client: Client,
+    client: reqwest::Client,
     output_path: Arc<String>,
 }
 
@@ -23,35 +16,20 @@ impl ParallelDownloader {
     fn new(url: String, output_path: String) -> Self {
         ParallelDownloader {
             url: Arc::new(url),
-            client: Client::new(),
+            client: reqwest::Client::new(),
             output_path: Arc::new(output_path),
         }
     }
 
     async fn start(self, threads: usize) {
         let total_size = self.get_size().await;
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<(usize, bytes::Bytes)>(50);
+        let (tx, rx) = tokio::sync::mpsc::channel::<(usize, bytes::Bytes)>(50);
         let num_chunks = (total_size + BLOCK_SIZE - 1) / BLOCK_SIZE; // 相当于有余数则+1
-
-        let file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .open(self.output_path.as_str())
-            .await
-            .expect("Failed to open output file");
-        let mut file = BufWriter::with_capacity(BLOCK_SIZE, file);
+        
         let mut tasks = Vec::with_capacity(num_chunks);
+        let write = Self::write(self.output_path.clone(),rx);
 
-        let write = tokio::spawn(async move {
-            while let Some((start, bytes)) = rx.recv().await {
-                file.seek(SeekFrom::Start(start as u64))
-                    .await
-                    .expect("Failed to seek");
-                file.write_all(&bytes).await.expect("Failed to write chunk");
-            }
-        });
-
-        let semaphore = Arc::new(Semaphore::new(threads)); // 限制为20并发
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(threads)); // 限制为20并发
 
         for i in 0..num_chunks {
             let start = i * BLOCK_SIZE;
@@ -67,10 +45,30 @@ impl ParallelDownloader {
             tasks.push(task);
         }
 
-        join_all(tasks).await;
+        futures::future::join_all(tasks).await;
         drop(tx);
-        write.await.expect("Failed to write chunk");
+        tokio::join!(write);
         println!("Done");
+    }
+    #[inline]
+    async fn write(output_path:Arc<String>, mut rx: tokio::sync::mpsc::Receiver<(usize, bytes::Bytes)>) -> tokio::task::JoinHandle<()> {
+        use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
+        
+        let file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(output_path.as_str())
+            .await
+            .expect("Failed to open output file");
+        let mut file = BufWriter::with_capacity(BLOCK_SIZE, file);
+        tokio::task::spawn(async move {
+            while let Some((start, bytes)) = rx.recv().await {
+                file.seek(std::io::SeekFrom::Start(start as u64))
+                    .await
+                    .expect("Failed to seek");
+                file.write_all(&bytes).await.expect("Failed to write chunk");
+            }
+        })
     }
 
     #[inline]
@@ -94,8 +92,10 @@ impl ParallelDownloader {
         start: usize,
         end: usize,
         tx: tokio::sync::mpsc::Sender<(usize, bytes::Bytes)>,
-        semaphore: Arc<Semaphore>,
+        semaphore: Arc<tokio::sync::Semaphore>,
     ) {
+        use futures::TryFutureExt;
+        
         let _permit = semaphore.acquire().await;
         let range = format!("bytes={}-{}", start, end);
         let mut retries = 0;
@@ -118,13 +118,14 @@ impl ParallelDownloader {
             if retries == 3 {
                 panic!("Too many retries left");
             }
-            tokio::time::sleep(Duration::from_secs(retries)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(retries)).await;
             retries += 1;
         }
     }
 }
 
 impl Clone for ParallelDownloader {
+    #[inline]
     fn clone(&self) -> Self {
         Self {
             url: self.url.clone(),
