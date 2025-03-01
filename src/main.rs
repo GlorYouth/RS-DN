@@ -26,7 +26,7 @@ impl ParallelDownloader {
         let num_chunks = (total_size + BLOCK_SIZE - 1) / BLOCK_SIZE; // 相当于有余数则+1
 
         let mut tasks = Vec::with_capacity(num_chunks + 1);
-        let write = Self::write(self.output_path.clone(), rx);
+        let write = Self::write(self.output_path.clone(), rx).await;
 
         let semaphore = Arc::new(tokio::sync::Semaphore::new(threads)); // 限制为20并发
 
@@ -43,10 +43,10 @@ impl ParallelDownloader {
             ));
             tasks.push(task);
         }
-        tasks.push(write.await);
 
         futures::future::join_all(tasks).await;
         drop(tx);
+        write.await.expect("Write await error");
         println!("Done");
     }
     #[inline]
@@ -149,7 +149,7 @@ fn main() {
         .expect("Failed to build tokio runtime");
     rt.block_on(
         ParallelDownloader::new(
-            "https://alist.gloryouth.com/d/EDU/%E5%AF%B9%E5%A4%96/%E6%88%90%E7%89%87/%E8%8A%82%E7%9B%AE1_%E6%94%B9_ai.mp4".into(),
+            "https://ddns.gloryouth.com:10053/d/outer/local/output.mp4".into(),
             "output.mp4".into(),
         )
         .start(20),
