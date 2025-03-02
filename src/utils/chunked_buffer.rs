@@ -33,6 +33,7 @@ impl Chunk {
 
     #[inline]
     fn insert(&mut self, index: usize, value: impl Borrow<[u8]>) {
+        // Index is the position of value in Chunk
         if index >= self.capacity {
             panic!("Index out of bounds");
         }
@@ -89,7 +90,7 @@ impl Chunk {
                 while i < self.capacity && ((self.avail >> i) & 1 == 1) {
                     i += 1;
                 }
-                // 将该区间的元素复制到一个新的 Vec 中
+                // 将该区间的元素复制到一个新的 Bytes 中
                 let slice = unsafe { self.slice(start..i) };
                 result.push((start, Bytes::copy_from_slice(slice)));
             } else {
@@ -144,6 +145,7 @@ impl ChunkedBuffer {
     }
 
     pub fn insert(&mut self, index: usize, item: impl Borrow<[u8]>) {
+        // index is the position of single element in the whole Buffer
         let block_index = index / self.block_size;
         let pos_in_block = index % self.block_size;
 
@@ -186,12 +188,22 @@ impl ChunkedBuffer {
 
     #[inline]
     pub fn iter_full(&self) -> IterFull {
-        IterFull::from(self.chunks.iter().filter(|(_, chunk)| chunk.is_full()))
+        IterFull::from(
+            self.chunks
+                .iter()
+                .filter(|(_, chunk)| chunk.is_full()),
+            self.block_size
+        )
     }
 
     #[inline]
     pub fn iter_non_full(&self) -> IterNonFull {
-        IterNonFull::from(self.chunks.iter().filter(|(_, chunk)| !chunk.is_full()))
+        IterNonFull::from(
+            self.chunks
+                .iter()
+                .filter(|(_, chunk)| !chunk.is_full()),
+            self.block_size
+        )
     }
 }
 
@@ -202,17 +214,18 @@ type IterIndex<'a> = core::iter::Filter<
 
 pub struct IterFull<'a> {
     iter: IterIndex<'a>,
+    block_size: usize,
 }
 
 impl<'a> IterFull<'a> {
     #[inline]
-    fn from(value: IterIndex<'a>) -> Self {
-        Self { iter: value }
+    fn from(value: IterIndex<'a>, block_size: usize) -> Self {
+        Self { iter: value, block_size }
     }
 
     pub async fn write_file(&mut self, file: &mut BufWriter<tokio::fs::File>) -> Option<()> {
-        if let Some((k, v)) = self.iter.next() {
-            file.seek(std::io::SeekFrom::Start(*k as u64))
+        if let Some((block_index, v)) = self.iter.next() {
+            file.seek(std::io::SeekFrom::Start((block_index * self.block_size) as u64))
                 .await
                 .expect("Failed to seek");
             file.write_all(v.full_bytes().expect("Failed to get bytes").as_ref())
@@ -227,19 +240,20 @@ impl<'a> IterFull<'a> {
 
 pub struct IterNonFull<'a> {
     iter: IterIndex<'a>,
+    block_size: usize,
 }
 
 impl<'a> IterNonFull<'a> {
     #[inline]
-    fn from(value: IterIndex<'a>) -> Self {
-        Self { iter: value }
+    fn from(value: IterIndex<'a>, block_size: usize) -> Self {
+        Self { iter: value, block_size }
     }
-
+    
     pub async fn write_file(&mut self, file: &mut BufWriter<tokio::fs::File>) -> Option<()> {
-        if let Some((k, v)) = self.iter.next() {
-            let start = *k as u64;
+        if let Some((block_index, v)) = self.iter.next() {
+            let start = block_index * self.block_size;
             for (index, bytes) in v.non_full_bytes().iter() {
-                file.seek(std::io::SeekFrom::Start(start + *index as u64))
+                file.seek(std::io::SeekFrom::Start((start + *index) as u64))
                     .await
                     .expect("Failed to seek");
                 file.write_all(bytes.as_ref())

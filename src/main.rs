@@ -77,7 +77,6 @@ impl ParallelDownloader {
             }
             let mut iter = buffer.iter_non_full();
             while iter.write_file(&mut file).await.is_some() {}
-            todo!("test")
         })
     }
 
@@ -175,7 +174,7 @@ fn main() {
             hasher.update(&buf[..n]);
         }
         println!("Hash: {:x}", hasher.finalize());
-        // 83eef54650107537de687da7ad4d7c98
+        // c682de7c1dafda005525f1bc0a282d7d
     });
     // match response.headers().get("alt-svc") {
     //     None => {
