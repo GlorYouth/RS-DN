@@ -1,11 +1,11 @@
 mod utils;
 
-use std::io::{Read, Write};
+use std::io::Read;
 // use lazy_static::lazy_static;
 // use regex::Regex;
 use crate::utils::ChunkedBuffer;
-use std::sync::Arc;
 use md5::{Digest, Md5};
+use std::sync::Arc;
 
 const BLOCK_SIZE: usize = 6 * 1024 * 1024; // 每个块6MB
 
@@ -60,15 +60,13 @@ impl ParallelDownloader {
         output_path: Arc<String>,
         mut rx: tokio::sync::mpsc::Receiver<(usize, bytes::Bytes)>,
     ) -> tokio::task::JoinHandle<()> {
-        use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
-
         let file = tokio::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .open(output_path.as_str())
             .await
             .expect("Failed to open output file");
-        let mut file = BufWriter::with_capacity(BLOCK_SIZE, file);
+        let mut file = tokio::io::BufWriter::with_capacity(BLOCK_SIZE, file);
 
         tokio::task::spawn(async move {
             let mut buffer = ChunkedBuffer::new(16);
@@ -124,8 +122,8 @@ impl ParallelDownloader {
                     Ok(())
                 }),
         )
-            .await
-            .is_err()
+        .await
+        .is_err()
         {
             if retries == 3 {
                 panic!("Too many retries left");
@@ -157,13 +155,14 @@ fn main() {
         .enable_all() // 可在runtime中使用所有功能
         .build() // 创建runtime
         .expect("Failed to build tokio runtime");
-    rt.block_on( async {
+    rt.block_on(async {
         let path = "output.mp4";
         ParallelDownloader::new(
             "https://ddns.gloryouth.com:10053/d/outer/local/output.mp4".into(),
             path.into(),
         )
-            .start(20).await;
+        .start(20)
+        .await;
         let mut hasher = Md5::new();
         let file = std::fs::File::open(path).expect("Failed to open output file");
         let mut reader = std::io::BufReader::new(file);
@@ -177,8 +176,7 @@ fn main() {
         }
         println!("Hash: {:x}", hasher.finalize());
         // 83eef54650107537de687da7ad4d7c98
-    }
-    );
+    });
     // match response.headers().get("alt-svc") {
     //     None => {
     //         let v = response

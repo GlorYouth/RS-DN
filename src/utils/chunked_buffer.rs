@@ -8,8 +8,8 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
 
 #[derive(Debug)]
 pub struct Chunk {
-    avail: usize, // 成功初始化的标记
-    set_len: usize, // 输入数组的固定长度
+    avail: usize,    // 成功初始化的标记
+    set_len: usize,  // 输入数组的固定长度
     capacity: usize, // 总元素个数
     data: Vec<MaybeUninit<u8>>,
 }
@@ -76,9 +76,10 @@ impl Chunk {
             Some(Bytes::copy_from_slice(slice))
         }
     }
-    
+
     #[inline]
-    pub fn non_full_bytes(&self) -> Vec<(usize,Bytes)> { // 当前内部索引和连续块
+    pub fn non_full_bytes(&self) -> Vec<(usize, Bytes)> {
+        // 当前内部索引和连续块
         let mut result = Vec::new();
         let mut i = 0;
         while i < self.capacity {
@@ -97,7 +98,7 @@ impl Chunk {
         }
         result
     }
-    
+
     #[inline]
     unsafe fn index_mut(&mut self, index: usize) -> &mut [u8] {
         let start = index * self.set_len;
@@ -105,8 +106,6 @@ impl Chunk {
             slice::from_raw_parts_mut(self.data.as_mut_ptr().add(start) as *mut u8, self.set_len)
         }
     }
-    
-    
 
     #[inline]
     unsafe fn index(&self, index: usize) -> &[u8] {
@@ -196,20 +195,23 @@ impl ChunkedBuffer {
     }
 }
 
-type IterIndex<'a> = core::iter::Filter<std::collections::hash_map::Iter<'a,usize, Chunk>, fn(&(&usize, &Chunk)) -> bool>;
+type IterIndex<'a> = core::iter::Filter<
+    std::collections::hash_map::Iter<'a, usize, Chunk>,
+    fn(&(&usize, &Chunk)) -> bool,
+>;
 
 pub struct IterFull<'a> {
-    iter: IterIndex<'a>
+    iter: IterIndex<'a>,
 }
 
-impl<'a>  IterFull<'a> {
+impl<'a> IterFull<'a> {
     #[inline]
     fn from(value: IterIndex<'a>) -> Self {
         Self { iter: value }
     }
 
-    pub async fn write_file(&mut self, file:&mut BufWriter<tokio::fs::File>) -> Option<()> {
-        if let Some((k,v)) = self.iter.next() {
+    pub async fn write_file(&mut self, file: &mut BufWriter<tokio::fs::File>) -> Option<()> {
+        if let Some((k, v)) = self.iter.next() {
             file.seek(std::io::SeekFrom::Start(*k as u64))
                 .await
                 .expect("Failed to seek");
@@ -224,17 +226,17 @@ impl<'a>  IterFull<'a> {
 }
 
 pub struct IterNonFull<'a> {
-    iter: IterIndex<'a>
+    iter: IterIndex<'a>,
 }
 
-impl<'a>  IterNonFull<'a> {
+impl<'a> IterNonFull<'a> {
     #[inline]
     fn from(value: IterIndex<'a>) -> Self {
         Self { iter: value }
     }
-    
-    pub async fn write_file(&mut self, file:&mut BufWriter<tokio::fs::File>) -> Option<()> {
-        if let Some((k,v)) = self.iter.next() {
+
+    pub async fn write_file(&mut self, file: &mut BufWriter<tokio::fs::File>) -> Option<()> {
+        if let Some((k, v)) = self.iter.next() {
             let start = *k as u64;
             for (index, bytes) in v.non_full_bytes().iter() {
                 file.seek(std::io::SeekFrom::Start(start + *index as u64))
@@ -285,13 +287,17 @@ mod tests {
         let mut buff = ChunkedBuffer::new(5);
         buff.insert(0, [0]);
         assert_eq!(buff.peek_first_chunk(false).unwrap().avail, 1);
-        unsafe { assert_eq!(*buff.peek_first_chunk(false).unwrap().index(0), [0]); }
+        unsafe {
+            assert_eq!(*buff.peek_first_chunk(false).unwrap().index(0), [0]);
+        }
 
         assert!(buff.peek_first_chunk(true).is_none());
 
         buff.insert(2, [1]);
         assert_eq!(buff.peek_first_chunk(false).unwrap().avail, 0b101);
-        unsafe { assert_eq!(*buff.peek_first_chunk(false).unwrap().index(2), [1]); }
+        unsafe {
+            assert_eq!(*buff.peek_first_chunk(false).unwrap().index(2), [1]);
+        }
 
         assert!(buff.peek_first_chunk(true).is_none());
 
