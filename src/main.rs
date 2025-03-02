@@ -1,9 +1,11 @@
 mod utils;
 
+use std::io::{Read, Write};
 // use lazy_static::lazy_static;
 // use regex::Regex;
 use crate::utils::ChunkedBuffer;
 use std::sync::Arc;
+use md5::{Digest, Md5};
 
 const BLOCK_SIZE: usize = 6 * 1024 * 1024; // 每个块6MB
 
@@ -126,8 +128,8 @@ impl ParallelDownloader {
                     Ok(())
                 }),
         )
-        .await
-        .is_err()
+            .await
+            .is_err()
         {
             if retries == 3 {
                 panic!("Too many retries left");
@@ -159,12 +161,26 @@ fn main() {
         .enable_all() // 可在runtime中使用所有功能
         .build() // 创建runtime
         .expect("Failed to build tokio runtime");
-    rt.block_on(
+    rt.block_on( async {
+        let path = "output.mp4";
         ParallelDownloader::new(
-            "https://alist.gloryouth.com/d/outer/edu/%E6%88%90%E7%89%87/%E8%8A%82%E7%9B%AE1_%E6%94%B9_ai.mp4".into(),
-            "output.mp4".into(),
+            "https://ddns.gloryouth.com:10053/d/outer/local/output.mp4".into(),
+            path.into(),
         )
-        .start(20),
+            .start(20).await;
+        let mut hasher = Md5::new();
+        let file = std::fs::File::open(path).expect("Failed to open output file");
+        let mut reader = std::io::BufReader::new(file);
+        let mut buf = [0; 4096];
+        loop {
+            let n = reader.read(&mut buf).expect("Failed to read from file");
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        println!("Hash: {:x}", hasher.finalize());
+    }
     );
     // match response.headers().get("alt-svc") {
     //     None => {
