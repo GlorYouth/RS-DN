@@ -75,15 +75,11 @@ impl ParallelDownloader {
             while let Some((start, bytes)) = rx.recv().await {
                 buffer.insert(start, bytes);
                 let mut iter = buffer.iter_full();
-                while let Some(v) = iter.next() {
-                    file.seek(std::io::SeekFrom::Start(start as u64))
-                        .await
-                        .expect("Failed to seek");
-                    file.write_all(v.1.bytes().expect("Failed to get bytes").as_ref())
-                        .await
-                        .expect("Failed to write chunk");
-                }
+                while iter.write_file(&mut file).await.is_some() {}
             }
+            let mut iter = buffer.iter_non_full();
+            while iter.write_file(&mut file).await.is_some() {}
+            todo!("test")
         })
     }
 
@@ -180,6 +176,7 @@ fn main() {
             hasher.update(&buf[..n]);
         }
         println!("Hash: {:x}", hasher.finalize());
+        // 83eef54650107537de687da7ad4d7c98
     }
     );
     // match response.headers().get("alt-svc") {

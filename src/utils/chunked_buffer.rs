@@ -2,13 +2,15 @@ use bytes::Bytes;
 use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::mem::MaybeUninit;
+use std::ops::Range;
 use std::slice;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
 
 #[derive(Debug)]
 pub struct Chunk {
-    avail: usize,
-    set_len: usize,
-    capacity: usize,
+    avail: usize, // 成功初始化的标记
+    set_len: usize, // 输入数组的固定长度
+    capacity: usize, // 总元素个数
     data: Vec<MaybeUninit<u8>>,
 }
 
@@ -64,7 +66,7 @@ impl Chunk {
     }
 
     #[inline]
-    pub fn bytes(&self) -> Option<Bytes> {
+    pub fn full_bytes(&self) -> Option<Bytes> {
         if !self.is_full() {
             return None;
         }
@@ -76,17 +78,47 @@ impl Chunk {
     }
     
     #[inline]
+    pub fn non_full_bytes(&self) -> Vec<(usize,Bytes)> { // 当前内部索引和连续块
+        let mut result = Vec::new();
+        let mut i = 0;
+        while i < self.capacity {
+            if (self.avail >> i) & 1 == 1 {
+                let start = i;
+                // 找到连续为1的区间
+                while i < self.capacity && ((self.avail >> i) & 1 == 1) {
+                    i += 1;
+                }
+                // 将该区间的元素复制到一个新的 Vec 中
+                let slice = unsafe { self.slice(start..i) };
+                result.push((start, Bytes::copy_from_slice(slice)));
+            } else {
+                i += 1;
+            }
+        }
+        result
+    }
+    
+    #[inline]
     unsafe fn index_mut(&mut self, index: usize) -> &mut [u8] {
         let start = index * self.set_len;
         unsafe {
             slice::from_raw_parts_mut(self.data.as_mut_ptr().add(start) as *mut u8, self.set_len)
         }
     }
+    
+    
 
     #[inline]
     unsafe fn index(&self, index: usize) -> &[u8] {
         let start = index * self.set_len;
         unsafe { slice::from_raw_parts(self.data.as_ptr().add(start) as *const u8, self.set_len) }
+    }
+
+    #[inline]
+    unsafe fn slice(&self, index: Range<usize>) -> &[u8] {
+        let start = index.start * self.set_len;
+        let end = index.end * self.set_len;
+        unsafe { slice::from_raw_parts(self.data.as_ptr().add(start) as *const u8, end - start) }
     }
 }
 
@@ -99,7 +131,7 @@ impl AsRef<Chunk> for Chunk {
 #[derive(Debug)]
 pub struct ChunkedBuffer {
     block_size: usize, // 每个块固定的大小
-    // 使用 BTreeMap 保存各个块：key 为块编号，value 为块数据（使用 Option<T> 保存，便于记录未填充部分）
+    // 使用 HashMap 保存各个块：key 为块编号，value 为块数据（使用 Option<T> 保存，便于记录未填充部分）
     chunks: HashMap<usize, Chunk>,
 }
 
@@ -154,13 +186,68 @@ impl ChunkedBuffer {
     }
 
     #[inline]
-    pub fn iter_full(&self) -> impl Iterator<Item = (&usize, &Chunk)> {
-        self.chunks.iter().filter(|(_, chunk)| chunk.is_full())
+    pub fn iter_full(&self) -> IterFull {
+        IterFull::from(self.chunks.iter().filter(|(_, chunk)| chunk.is_full()))
     }
 
     #[inline]
-    pub fn iter_non_full(&self) -> impl Iterator<Item = (&usize, &Chunk)> {
-        self.chunks.iter().filter(|(_, chunk)| !chunk.is_full())
+    pub fn iter_non_full(&self) -> IterNonFull {
+        IterNonFull::from(self.chunks.iter().filter(|(_, chunk)| !chunk.is_full()))
+    }
+}
+
+type IterIndex<'a> = core::iter::Filter<std::collections::hash_map::Iter<'a,usize, Chunk>, fn(&(&usize, &Chunk)) -> bool>;
+
+pub struct IterFull<'a> {
+    iter: IterIndex<'a>
+}
+
+impl<'a>  IterFull<'a> {
+    #[inline]
+    fn from(value: IterIndex<'a>) -> Self {
+        Self { iter: value }
+    }
+
+    pub async fn write_file(&mut self, file:&mut BufWriter<tokio::fs::File>) -> Option<()> {
+        if let Some((k,v)) = self.iter.next() {
+            file.seek(std::io::SeekFrom::Start(*k as u64))
+                .await
+                .expect("Failed to seek");
+            file.write_all(v.full_bytes().expect("Failed to get bytes").as_ref())
+                .await
+                .expect("Failed to write chunk");
+            Some(())
+        } else {
+            None
+        }
+    }
+}
+
+pub struct IterNonFull<'a> {
+    iter: IterIndex<'a>
+}
+
+impl<'a>  IterNonFull<'a> {
+    #[inline]
+    fn from(value: IterIndex<'a>) -> Self {
+        Self { iter: value }
+    }
+    
+    pub async fn write_file(&mut self, file:&mut BufWriter<tokio::fs::File>) -> Option<()> {
+        if let Some((k,v)) = self.iter.next() {
+            let start = *k as u64;
+            for (index, bytes) in v.non_full_bytes().iter() {
+                file.seek(std::io::SeekFrom::Start(start + *index as u64))
+                    .await
+                    .expect("Failed to seek");
+                file.write_all(bytes.as_ref())
+                    .await
+                    .expect("Failed to write chunk");
+            }
+            Some(())
+        } else {
+            None
+        }
     }
 }
 
@@ -187,7 +274,7 @@ mod tests {
 
         assert!(
             chunk
-                .bytes()
+                .full_bytes()
                 .unwrap()
                 .iter()
                 .eq(slice.iter().chain(slice2.iter()))
