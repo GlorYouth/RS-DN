@@ -1,6 +1,12 @@
+mod utils;
+
+use std::io::Read;
 // use lazy_static::lazy_static;
 // use regex::Regex;
+use crate::utils::ChunkedBuffer;
+use md5::{Digest, Md5};
 use std::sync::Arc;
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 const BLOCK_SIZE: usize = 6 * 1024 * 1024; // 每个块6MB
 
@@ -49,26 +55,39 @@ impl ParallelDownloader {
         write.await.expect("Write await error");
         println!("Done");
     }
+
     #[inline]
     async fn write(
         output_path: Arc<String>,
         mut rx: tokio::sync::mpsc::Receiver<(usize, bytes::Bytes)>,
     ) -> tokio::task::JoinHandle<()> {
-        use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
-
         let file = tokio::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .open(output_path.as_str())
             .await
             .expect("Failed to open output file");
-        let mut file = BufWriter::with_capacity(BLOCK_SIZE, file);
+        let mut file = tokio::io::BufWriter::with_capacity(BLOCK_SIZE, file);
+
         tokio::task::spawn(async move {
+            let mut buffer = ChunkedBuffer::new(16);
             while let Some((start, bytes)) = rx.recv().await {
-                file.seek(std::io::SeekFrom::Start(start as u64))
-                    .await
-                    .expect("Failed to seek");
-                file.write_all(&bytes).await.expect("Failed to write chunk");
+                buffer.insert(start, bytes);
+                let mut iter = buffer.iter_full();
+                while iter.write_file(&mut file).await.is_some() {}
+            }
+            let block_size = buffer.get_block_size();
+
+            while let Some((block_index,chunk)) = buffer.take_first_chunk(false) {
+                let start = block_index * block_size;
+                for (index, bytes) in chunk.non_full_bytes().iter() {
+                    file.seek(std::io::SeekFrom::Start((start + *index) as u64))
+                        .await
+                        .expect("Failed to seek");
+                    file.write_all(bytes.as_ref())
+                        .await
+                        .expect("Failed to write chunk");
+                }
             }
         })
     }
@@ -147,13 +166,28 @@ fn main() {
         .enable_all() // 可在runtime中使用所有功能
         .build() // 创建runtime
         .expect("Failed to build tokio runtime");
-    rt.block_on(
+    rt.block_on(async {
+        let path = "output.mp4";
         ParallelDownloader::new(
-            "https://ddns.gloryouth.com:10053/d/outer/local/output.mp4".into(),
-            "output.mp4".into(),
+            "http://192.168.2.3:5244/d/outer/local/output.mp4".into(),
+            path.into(),
         )
-        .start(20),
-    );
+        .start(20)
+        .await;
+        let mut hasher = Md5::new();
+        let file = std::fs::File::open(path).expect("Failed to open output file");
+        let mut reader = std::io::BufReader::new(file);
+        let mut buf = [0; 4096];
+        loop {
+            let n = reader.read(&mut buf).expect("Failed to read from file");
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        assert_eq!(format!("{:x}",hasher.finalize()), "c682de7c1dafda005525f1bc0a282d7d");
+        // 
+    });
     // match response.headers().get("alt-svc") {
     //     None => {
     //         let v = response
