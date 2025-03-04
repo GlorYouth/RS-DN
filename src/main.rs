@@ -6,7 +6,6 @@ use std::io::Read;
 use crate::utils::ChunkedBuffer;
 use md5::{Digest, Md5};
 use std::sync::Arc;
-use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 const BLOCK_SIZE: usize = 6 * 1024 * 1024; // 每个块6MB
 
@@ -70,24 +69,18 @@ impl ParallelDownloader {
         let mut file = tokio::io::BufWriter::with_capacity(BLOCK_SIZE, file);
 
         tokio::task::spawn(async move {
-            let mut buffer = ChunkedBuffer::new(16);
+            let block_size = 16;
+            let mut buffer = ChunkedBuffer::new(block_size);
             while let Some((start, bytes)) = rx.recv().await {
                 buffer.insert(start, bytes);
-                let mut iter = buffer.iter_full();
-                while iter.write_file(&mut file).await.is_some() {}
-            }
-            let block_size = buffer.get_block_size();
 
-            while let Some((block_index,chunk)) = buffer.take_first_chunk(false) {
-                let start = block_index * block_size;
-                for (index, bytes) in chunk.non_full_bytes().iter() {
-                    file.seek(std::io::SeekFrom::Start((start + *index) as u64))
-                        .await
-                        .expect("Failed to seek");
-                    file.write_all(bytes.as_ref())
-                        .await
-                        .expect("Failed to write chunk");
+                while let Some(v) = buffer.take_first_full_chunk() {
+                    v.write_file(&mut file).await
                 }
+            }
+
+            while let Some(v) = buffer.take_first_not_full_chunk() {
+                v.write_file(&mut file).await
             }
         })
     }
@@ -185,8 +178,11 @@ fn main() {
             }
             hasher.update(&buf[..n]);
         }
-        assert_eq!(format!("{:x}",hasher.finalize()), "c682de7c1dafda005525f1bc0a282d7d");
-        // 
+        assert_eq!(
+            format!("{:x}", hasher.finalize()),
+            "c682de7c1dafda005525f1bc0a282d7d"
+        );
+        //
     });
     // match response.headers().get("alt-svc") {
     //     None => {

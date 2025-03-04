@@ -160,115 +160,102 @@ impl ChunkedBuffer {
     }
 
     #[inline]
-    pub fn peek_first_chunk(&self, is_full: bool) -> Option<(usize,&Chunk)> {
+    pub fn peek_first_chunk(&self, is_full: bool) -> Option<(usize, &Chunk)> {
         let mut iter = self.chunks.iter().peekable();
         loop {
             let (k, chunk) = iter.next()?;
             if is_full ^ chunk.is_full() {
                 continue;
             } else {
-                return Some((*k,chunk));
+                return Some((*k, chunk));
             }
         }
     }
 
     #[inline]
-    pub fn take_first_chunk(&mut self, is_full: bool) -> Option<(usize,Chunk)> {
+    pub fn take_first_full_chunk(&mut self) -> Option<BufferEntryFull<Chunk>> {
         // 获取块编号最小的块的 key
 
         let mut keys = self.chunks.keys();
         loop {
             let k = *keys.next()?;
-            if is_full ^ self.chunks[&k].is_full() {
+            if self.chunks[&k].is_full() {
                 continue;
             } else {
-                return Some((k,self.chunks.remove(&k)?));
+                return Some(BufferEntryFull {
+                    block_index: k,
+                    block_size: self.block_size,
+                    chunk: self.chunks.remove(&k)?,
+                });
             }
         }
     }
 
     #[inline]
-    pub fn iter_full(&self) -> IterFull {
-        IterFull::from(
-            self.chunks
-                .iter()
-                .filter(|(_, chunk)| chunk.is_full()),
-            self.block_size
-        )
-    }
+    pub fn take_first_not_full_chunk(&mut self) -> Option<BufferEntryFull<Chunk>> {
+        // 获取块编号最小的块的 key
 
-    #[inline]
-    pub fn iter_non_full(&self) -> IterNonFull {
-        IterNonFull::from(
-            self.chunks
-                .iter()
-                .filter(|(_, chunk)| !chunk.is_full()),
-            self.block_size
-        )
+        let mut keys = self.chunks.keys();
+        loop {
+            let k = *keys.next()?;
+            if !self.chunks[&k].is_full() {
+                continue;
+            } else {
+                return Some(BufferEntryFull {
+                    block_index: k,
+                    block_size: self.block_size,
+                    chunk: self.chunks.remove(&k)?,
+                });
+            }
+        }
     }
     
-    #[inline]
-    pub fn get_block_size(&self) -> usize {
-        self.block_size
-    }
 }
 
-type IterIndex<'a> = core::iter::Filter<
-    std::collections::hash_map::Iter<'a, usize, Chunk>,
-    fn(&(&usize, &Chunk)) -> bool,
->;
-
-pub struct IterFull<'a> {
-    iter: IterIndex<'a>,
+#[derive(Debug)]
+pub struct BufferEntryFull<B: Borrow<Chunk>> {
+    block_index: usize,
     block_size: usize,
+    chunk: B,
 }
 
-impl<'a> IterFull<'a> {
+impl<B: Borrow<Chunk>> BufferEntryFull<B> {
     #[inline]
-    fn from(value: IterIndex<'a>, block_size: usize) -> Self {
-        Self { iter: value, block_size }
+    pub async fn write_file(&self, file: &mut BufWriter<tokio::fs::File>) {
+        file.seek(std::io::SeekFrom::Start(
+            (self.block_index * self.block_size) as u64,
+        ))
+        .await
+        .expect("Failed to seek");
+        file.write_all(
+            self.chunk
+                .borrow()
+                .full_bytes()
+                .expect("Failed to get bytes")
+                .as_ref(),
+        )
+        .await
+        .expect("Failed to write chunk");
     }
+}
 
-    pub async fn write_file(&mut self, file: &mut BufWriter<tokio::fs::File>) -> Option<()> {
-        if let Some((block_index, v)) = self.iter.next() {
-            file.seek(std::io::SeekFrom::Start((block_index * self.block_size) as u64))
+pub struct BufferEntryNotFull<B: Borrow<Chunk>> {
+    block_index: usize,
+    block_size: usize,
+    chunk: B,
+}
+
+impl<B: Borrow<Chunk>> BufferEntryNotFull<B> {
+    #[inline]
+    pub async fn write_file(&self, file: &mut BufWriter<tokio::fs::File>) {
+        let start = self.block_index * self.block_size;
+        for (index, bytes) in self.chunk.borrow().non_full_bytes().iter() {
+            file.seek(std::io::SeekFrom::Start((start + *index) as u64))
                 .await
                 .expect("Failed to seek");
-            file.write_all(v.full_bytes().expect("Failed to get bytes").as_ref())
+            file.write_all(bytes.as_ref())
                 .await
                 .expect("Failed to write chunk");
-            Some(())
-        } else {
-            None
-        }
-    }
-}
-
-pub struct IterNonFull<'a> {
-    iter: IterIndex<'a>,
-    block_size: usize,
-}
-
-impl<'a> IterNonFull<'a> {
-    #[inline]
-    fn from(value: IterIndex<'a>, block_size: usize) -> Self {
-        Self { iter: value, block_size }
-    }
-    
-    pub async fn write_file(&mut self, file: &mut BufWriter<tokio::fs::File>) -> Option<()> {
-        if let Some((block_index, v)) = self.iter.next() {
-            let start = block_index * self.block_size;
-            for (index, bytes) in v.non_full_bytes().iter() {
-                file.seek(std::io::SeekFrom::Start((start + *index) as u64))
-                    .await
-                    .expect("Failed to seek");
-                file.write_all(bytes.as_ref())
-                    .await
-                    .expect("Failed to write chunk");
-            }
-            Some(())
-        } else {
-            None
         }
     }
 }
@@ -329,6 +316,6 @@ mod tests {
 
         assert_eq!(buff.peek_first_chunk(false).is_some(), false);
         assert_eq!(buff.peek_first_chunk(true).is_some(), true);
-        println!("{:?}", buff.take_first_chunk(true));
+        println!("{:?}", buff.take_first_full_chunk());
     }
 }
