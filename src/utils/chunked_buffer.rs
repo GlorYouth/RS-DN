@@ -192,7 +192,7 @@ impl ChunkedBuffer {
     }
 
     #[inline]
-    pub fn take_first_not_full_chunk(&mut self) -> Option<BufferEntryFull<Chunk>> {
+    pub fn take_first_not_full_chunk(&mut self) -> Option<BufferEntryNotFull<Chunk>> {
         // 获取块编号最小的块的 key
 
         let mut keys = self.chunks.keys();
@@ -201,7 +201,7 @@ impl ChunkedBuffer {
             if !self.chunks[&k].is_full() {
                 continue;
             } else {
-                return Some(BufferEntryFull {
+                return Some(BufferEntryNotFull {
                     block_index: k,
                     block_size: self.block_size,
                     chunk: self.chunks.remove(&k)?,
