@@ -6,7 +6,6 @@ use std::io::Read;
 use crate::utils::ChunkedBuffer;
 use md5::{Digest, Md5};
 use std::sync::Arc;
-use futures::executor::block_on;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 
 const BLOCK_SIZE: usize = 6 * 1024 * 1024; // 每个块6MB
@@ -78,20 +77,18 @@ impl ParallelDownloader {
                 while iter.write_file(&mut file).await.is_some() {}
             }
             let block_size = buffer.get_block_size();
-            while buffer.take_first_chunk(false).map(|(block_index,chunk)| {
+
+            while let Some((block_index,chunk)) = buffer.take_first_chunk(false) {
                 let start = block_index * block_size;
-                block_on(async {
-                    for (index, bytes) in chunk.non_full_bytes().iter() {
-                        file.seek(std::io::SeekFrom::Start((start + *index) as u64))
-                            .await
-                            .expect("Failed to seek");
-                        file.write_all(bytes.as_ref())
-                            .await
-                            .expect("Failed to write chunk");
-                    }
-                    Some(())
-                });
-            }).is_some() {}
+                for (index, bytes) in chunk.non_full_bytes().iter() {
+                    file.seek(std::io::SeekFrom::Start((start + *index) as u64))
+                        .await
+                        .expect("Failed to seek");
+                    file.write_all(bytes.as_ref())
+                        .await
+                        .expect("Failed to write chunk");
+                }
+            }
         })
     }
 
@@ -172,7 +169,7 @@ fn main() {
     rt.block_on(async {
         let path = "output.mp4";
         ParallelDownloader::new(
-            "https://ddns.gloryouth.com:10053/d/outer/local/output.mp4".into(),
+            "http://192.168.2.3:5244/d/outer/local/output.mp4".into(),
             path.into(),
         )
         .start(20)
@@ -188,8 +185,8 @@ fn main() {
             }
             hasher.update(&buf[..n]);
         }
-        println!("Hash: {:x}", hasher.finalize());
-        // c682de7c1dafda005525f1bc0a282d7d
+        assert_eq!(format!("{:x}",hasher.finalize()), "c682de7c1dafda005525f1bc0a282d7d");
+        // 
     });
     // match response.headers().get("alt-svc") {
     //     None => {
