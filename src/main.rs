@@ -7,7 +7,7 @@ use crate::utils::ChunkedBuffer;
 use md5::{Digest, Md5};
 use std::sync::Arc;
 
-const BLOCK_SIZE: usize = 6 * 1024 * 1024; // 每个块6MB
+const ELEMENT_SIZE: usize = 6 * 1024 * 1024; // 每个最小元素大小为6MB
 
 struct ParallelDownloader {
     url: Arc<String>,
@@ -28,7 +28,7 @@ impl ParallelDownloader {
     async fn start(self, threads: usize) {
         let total_size = self.get_size().await;
         let (tx, rx) = tokio::sync::mpsc::channel::<(usize, bytes::Bytes)>(50);
-        let num_chunks = (total_size + BLOCK_SIZE - 1) / BLOCK_SIZE; // 相当于有余数则+1
+        let num_chunks = (total_size + ELEMENT_SIZE - 1) / ELEMENT_SIZE; // 相当于有余数则+1
 
         let mut tasks = Vec::with_capacity(num_chunks + 1);
         let write = Self::write(self.output_path.clone(), rx).await;
@@ -36,8 +36,8 @@ impl ParallelDownloader {
         let semaphore = Arc::new(tokio::sync::Semaphore::new(threads)); // 限制为20并发
 
         for i in 0..num_chunks {
-            let start = i * BLOCK_SIZE;
-            let end = std::cmp::min(start + BLOCK_SIZE - 1, total_size - 1);
+            let start = i * ELEMENT_SIZE;
+            let end = std::cmp::min(start + ELEMENT_SIZE - 1, total_size - 1);
 
             // 异步下载块
             let task = tokio::spawn(self.clone().download_chunk(
@@ -66,11 +66,11 @@ impl ParallelDownloader {
             .open(output_path.as_str())
             .await
             .expect("Failed to open output file");
-        let mut file = tokio::io::BufWriter::with_capacity(BLOCK_SIZE, file);
+        let mut file = tokio::io::BufWriter::with_capacity(ELEMENT_SIZE, file);
 
         tokio::task::spawn(async move {
-            let block_size = 16;
-            let mut buffer = ChunkedBuffer::new(block_size);
+            let amount = 16;
+            let mut buffer = ChunkedBuffer::new(amount,ELEMENT_SIZE);
             while let Some((start, bytes)) = rx.recv().await {
                 buffer.insert(start, bytes);
 
