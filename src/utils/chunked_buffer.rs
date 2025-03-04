@@ -160,28 +160,29 @@ impl ChunkedBuffer {
     }
 
     #[inline]
-    pub fn peek_first_chunk(&self, is_full: bool) -> Option<&Chunk> {
+    pub fn peek_first_chunk(&self, is_full: bool) -> Option<(usize,&Chunk)> {
         let mut iter = self.chunks.iter().peekable();
         loop {
-            let (_, chunk) = iter.next()?;
+            let (k, chunk) = iter.next()?;
             if is_full ^ chunk.is_full() {
                 continue;
             } else {
-                return Some(chunk);
+                return Some((*k,chunk));
             }
         }
     }
 
-    pub fn take_first_chunk(&mut self, is_full: bool) -> Option<Chunk> {
+    #[inline]
+    pub fn take_first_chunk(&mut self, is_full: bool) -> Option<(usize,Chunk)> {
         // 获取块编号最小的块的 key
 
         let mut keys = self.chunks.keys();
         loop {
-            let k = Some(*keys.next()?);
-            if is_full ^ self.chunks[&k.unwrap()].is_full() {
+            let k = *keys.next()?;
+            if is_full ^ self.chunks[&k].is_full() {
                 continue;
             } else {
-                return self.chunks.remove(&k.unwrap());
+                return Some((k,self.chunks.remove(&k)?));
             }
         }
     }
@@ -204,6 +205,11 @@ impl ChunkedBuffer {
                 .filter(|(_, chunk)| !chunk.is_full()),
             self.block_size
         )
+    }
+    
+    #[inline]
+    pub fn get_block_size(&self) -> usize {
+        self.block_size
     }
 }
 
@@ -300,23 +306,23 @@ mod tests {
     fn test_chunk_buff() {
         let mut buff = ChunkedBuffer::new(5);
         buff.insert(0, [0]);
-        assert_eq!(buff.peek_first_chunk(false).unwrap().avail, 1);
+        assert_eq!(buff.peek_first_chunk(false).unwrap().1.avail, 1);
         unsafe {
-            assert_eq!(*buff.peek_first_chunk(false).unwrap().index(0), [0]);
+            assert_eq!(*buff.peek_first_chunk(false).unwrap().1.index(0), [0]);
         }
 
         assert!(buff.peek_first_chunk(true).is_none());
 
         buff.insert(2, [1]);
-        assert_eq!(buff.peek_first_chunk(false).unwrap().avail, 0b101);
+        assert_eq!(buff.peek_first_chunk(false).unwrap().1.avail, 0b101);
         unsafe {
-            assert_eq!(*buff.peek_first_chunk(false).unwrap().index(2), [1]);
+            assert_eq!(*buff.peek_first_chunk(false).unwrap().1.index(2), [1]);
         }
 
         assert!(buff.peek_first_chunk(true).is_none());
 
         buff.insert(1, [1]);
-        assert_eq!(buff.peek_first_chunk(false).unwrap().avail, 0b111);
+        assert_eq!(buff.peek_first_chunk(false).unwrap().1.avail, 0b111);
 
         buff.insert(3, [2]);
         buff.insert(4, [3]);
