@@ -180,14 +180,14 @@ impl ChunkedBuffer {
         loop {
             let k = *keys.next()?;
             if self.chunks[&k].is_full() {
-                continue;
-            } else {
                 return Some(BufferEntryFull {
                     block_index: k,
                     block_size: self.block_size,
                     chunk: self.chunks.remove(&k)?,
                 });
+                
             }
+            continue;
         }
     }
 
@@ -199,14 +199,13 @@ impl ChunkedBuffer {
         loop {
             let k = *keys.next()?;
             if !self.chunks[&k].is_full() {
-                continue;
-            } else {
                 return Some(BufferEntryNotFull {
                     block_index: k,
                     block_size: self.block_size,
                     chunk: self.chunks.remove(&k)?,
                 });
             }
+            continue;
         }
     }
     
