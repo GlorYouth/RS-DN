@@ -28,15 +28,8 @@ impl ParallelDownloader {
     async fn start(self, threads: usize) {
         let total_size = self.get_size().await;
         let total_element_counts = (total_size + ELEMENT_SIZE - 1) / ELEMENT_SIZE; // 相当于有余数则+1
-        let last_element_size =
-            std::cmp::min(total_element_counts * ELEMENT_SIZE - 1, total_size - 1);
 
-        let info = Arc::new(BlockInfo {
-            element_size: ELEMENT_SIZE,
-            element_amount: 16,
-            block_size: 16 * ELEMENT_SIZE,
-            total_element_counts,
-        });
+        let info = Arc::new(BlockInfo::new(ELEMENT_SIZE, 16, total_size));
 
         let (tx, rx) = tokio::sync::mpsc::channel::<(usize, bytes::Bytes)>(50);
         let mut tasks = Vec::with_capacity(total_element_counts + 1);
@@ -47,11 +40,7 @@ impl ParallelDownloader {
 
         for i in 0..total_element_counts {
             let start = i * ELEMENT_SIZE;
-            let end = if i != total_element_counts - 1 {
-                start + ELEMENT_SIZE - 1
-            } else {
-                last_element_size
-            };
+            let end = std::cmp::min(start + ELEMENT_SIZE - 1, total_size - 1);
 
             // 异步下载块
             let task = tokio::spawn(self.clone().download_chunk(

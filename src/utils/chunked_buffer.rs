@@ -9,21 +9,43 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
 
 #[derive(Debug)]
 pub struct BlockInfo {
-    pub element_size: usize,   // 元素占用空间
-    pub element_amount: usize, // 总元素个数
+    element_size: usize,   // 元素占用空间
+    element_amount: usize, // 总元素个数
 
-    pub block_size: usize, // 每个块固定的大小
-
-    pub total_element_counts: usize,
+    block_size: usize, // 每个块固定的大小
+    total_size: usize,
 }
+
+impl BlockInfo {
+    #[inline]
+    pub fn new(element_size: usize, element_amount: usize, total_size: usize) -> Self {
+        Self {
+            element_size,
+            element_amount,
+            block_size: element_size * element_amount,
+            total_size,
+        }
+    }
+    
+    #[inline]
+    fn get_last_element_size(&self) -> usize {
+        (self.total_size - 1) % self.element_size
+    }
+    
+    #[inline]
+    fn get_last_block_index(&self) -> usize {
+        (self.total_size) / self.block_size
+    }
+}
+
 
 #[derive(Debug)]
 pub struct Chunk {
-    block_info: Arc<BlockInfo>,
-    is_not_full_element_exist: bool, // 对应元素是否初始化的标记
+    info: Arc<BlockInfo>,
+    is_not_full_element_exist: bool, // 是否存在未满的元素
     last_element_size: Option<usize>,
     elements: Vec<MaybeUninit<u8>>,
-    avail: usize,
+    avail: usize, // 对应元素是否初始化的标记
 }
 
 impl Chunk {
@@ -38,7 +60,7 @@ impl Chunk {
 
         Chunk {
             elements: data,
-            block_info: info,
+            info,
             is_not_full_element_exist: false,
             last_element_size,
             avail: 0,
@@ -48,13 +70,13 @@ impl Chunk {
     #[inline]
     fn insert(&mut self, index: usize, value: impl Borrow<[u8]>) {
         // Index is the position of value in Chunk
-        if index >= self.block_info.element_amount {
+        if index >= self.info.element_amount {
             panic!("Index out of bounds");
         }
 
         let value = value.borrow();
 
-        if value.len() > self.block_info.element_size {
+        if value.len() > self.info.element_size {
             panic!("Wrong length");
         }
 
@@ -62,9 +84,11 @@ impl Chunk {
             panic!("Element added twice");
         }
 
-        if let Some(_) = self.last_element_size {
-            self.is_not_full_element_exist = true;
-        } else if value.len() < self.block_info.element_size {
+        if let Some(size) = self.last_element_size {
+            if size != self.info.element_size {
+                self.is_not_full_element_exist = true;
+            } else {}
+        } else if value.len() < self.info.element_size {
             panic!("Element size too small");
         }
         
@@ -77,20 +101,21 @@ impl Chunk {
     #[inline]
     fn is_full(&self) -> bool {
         if !self.is_not_full_element_exist {
-            return false;
-        }
-        if self.block_info.element_amount == usize::BITS as usize && !self.avail == 0 {
-            true
-        } else if (self.avail + 1) >> self.block_info.element_amount == 1 {
-            true
-        } else {
+            if self.info.element_amount == usize::BITS as usize && !self.avail == 0 {
+                true
+            } else if (self.avail + 1) >> self.info.element_amount == 1 {
+                true
+            } else { 
+                false
+            }
+        } else { 
             false
         }
     }
 
     #[inline]
     fn is_some(&self, index: usize) -> bool {
-        index < self.block_info.element_amount && self.avail >> index & 1 == 1
+        index < self.info.element_amount && self.avail >> index & 1 == 1
     }
 
     #[inline]
@@ -110,7 +135,7 @@ impl Chunk {
         // 当前内部索引和连续块
         let mut result = Vec::new();
         let mut i = 0;
-        while i < self.block_info.element_amount {
+        while i < self.info.element_amount {
             if self.is_some(i) {
                 let start = i;
                 // 找到连续为1的区间
@@ -131,7 +156,7 @@ impl Chunk {
 
     #[inline]
     unsafe fn index_mut(&mut self, index: usize, actual_size: usize) -> &mut [u8] {
-        let start = index * self.block_info.element_size;
+        let start = index * self.info.element_size;
         unsafe {
             slice::from_raw_parts_mut(
                 self.elements.as_mut_ptr().add(start) as *mut u8,
@@ -151,16 +176,16 @@ impl Chunk {
         if index.start == index.end {
             return None;
         }
-        let start = index.start * self.block_info.element_size;
-        let end = index.end * self.block_info.element_size;
+        let start = index.start * self.info.element_size;
+        let end = index.end * self.info.element_size;
 
         let end_size = match self.last_element_size {
             Some(last_element_size) => {
                 last_element_size
             }
-            None => self.block_info.element_size,
+            None => self.info.element_size,
         };
-        let len = end - start - (self.block_info.element_size - end_size);
+        let len = end - start - (self.info.element_size - end_size);
         unsafe {
             Some(slice::from_raw_parts(
                 self.elements.as_ptr().add(start) as *const u8,
@@ -206,8 +231,8 @@ impl ChunkedBuffer {
             panic!("Item out of bounds");
         }
         
-        let last_element_size = if block_index == self.info.total_element_counts / self.info.element_amount {
-            Some(item.borrow().len() % self.info.element_size)
+        let last_element_size = if block_index == self.info.get_last_block_index() {
+            Some(self.info.get_last_element_size())
         } else { 
             None
         };
@@ -335,7 +360,7 @@ mod tests {
                 element_size: size_of::<usize>() * 10,
                 element_amount: 2,
                 block_size: 2 * (size_of::<usize>() * 10),
-                total_element_counts: 2,
+                total_size: 2 * (size_of::<usize>() * 10),
             }
         }), None);
         let mut slice2 = [0_isize; 10];
@@ -362,7 +387,7 @@ mod tests {
                 element_size: 1,
                 element_amount: 5,
                 block_size: 5,
-                total_element_counts: 5,
+                total_size: 5,
             }
         ));
         buff.insert(0, [0]);
