@@ -4,76 +4,93 @@ use std::collections::HashMap;
 use std::mem::MaybeUninit;
 use std::ops::Range;
 use std::slice;
+use std::sync::Arc;
 use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
 
 #[derive(Debug)]
+pub struct BlockInfo {
+    pub element_size: usize,   // 元素占用空间
+    pub element_amount: usize, // 总元素个数
+
+    pub block_size: usize, // 每个块固定的大小
+
+    pub total_element_counts: usize,
+}
+
+#[derive(Debug)]
 pub struct Chunk {
-    element_size: usize,  // 元素占用空间
-    element_amount: usize, // 总元素个数
-    is_not_full_element_exit: bool, // 是否有不全的元素
-    data: Vec<MaybeUninit<u8>>,
-    element_actual_size: Vec<usize>,
-    element_actual_amount: usize,
+    block_info: Arc<BlockInfo>,
+    is_not_full_element_exist: bool, // 对应元素是否初始化的标记
+    last_element_size: Option<usize>,
+    elements: Vec<MaybeUninit<u8>>,
+    avail: usize,
 }
 
 impl Chunk {
     #[inline]
-    fn new(element_amount: usize, element_size: usize) -> Self {
-        if element_amount > usize::BITS as usize || element_amount == 0 {
-            panic!("Unavailable chunk capacity: {}", element_amount);
+    fn new(info: Arc<BlockInfo>, last_element_size: Option<usize>) -> Self {
+        if info.element_amount > usize::BITS as usize || info.element_amount == 0 {
+            panic!("Unavailable chunk capacity: {}", info.element_amount);
         }
-        let len = element_amount * element_size;
+        let len = info.element_amount * info.element_size;
         let mut data = Vec::with_capacity(len);
         unsafe { data.set_len(len) };
-        let mut element_actual_size = Vec::new();
-        element_actual_size.resize(element_amount, 0);
-        
+
         Chunk {
-            data,
-            element_amount,
-            element_size,
-            is_not_full_element_exit: false,
-            element_actual_size,
-            element_actual_amount: 0,
+            elements: data,
+            block_info: info,
+            is_not_full_element_exist: false,
+            last_element_size,
+            avail: 0,
         }
     }
 
     #[inline]
     fn insert(&mut self, index: usize, value: impl Borrow<[u8]>) {
         // Index is the position of value in Chunk
-        if index >= self.element_amount {
+        if index >= self.block_info.element_amount {
             panic!("Index out of bounds");
         }
 
-        if value.borrow().len() > self.element_size {
+        let value = value.borrow();
+
+        if value.len() > self.block_info.element_size {
             panic!("Wrong length");
         }
-        
+
         if self.is_some(index) {
             panic!("Element added twice");
         }
+
+        if let Some(_) = self.last_element_size {
+            self.is_not_full_element_exist = true;
+        } else if value.len() < self.block_info.element_size {
+            panic!("Element size too small");
+        }
         
-        let value = value.borrow();
         unsafe {
             self.index_mut(index, value.len()).copy_from_slice(value);
         }
-        
-        if value.len() < self.element_size {
-            self.is_not_full_element_exit = true;
-        }
-        
-        self.element_actual_size[index] = value.len();
-        self.element_actual_amount += 1;
+        self.avail |= 1 << index;
     }
 
     #[inline]
     fn is_full(&self) -> bool {
-        self.element_actual_amount == self.element_amount && !self.is_not_full_element_exit
+        if !self.is_not_full_element_exist {
+            return false;
+        }
+        if self.block_info.element_amount == usize::BITS as usize && !self.avail == 0 {
+            true
+        } else if (self.avail + 1) >> self.block_info.element_amount == 1 {
+            true
+        } else {
+            false
+        }
     }
 
     #[inline]
     fn is_some(&self, index: usize) -> bool {
-         index < self.element_amount && self.element_actual_size[index] > 0
+        index < self.block_info.element_amount && self.avail >> index & 1 == 1
     }
 
     #[inline]
@@ -81,9 +98,9 @@ impl Chunk {
         if !self.is_full() {
             return None;
         }
-        let ptr = self.data.as_ptr() as *const u8;
+        let ptr = self.elements.as_ptr() as *const u8;
         unsafe {
-            let slice = slice::from_raw_parts(ptr, self.data.len());
+            let slice = slice::from_raw_parts(ptr, self.elements.len());
             Some(Bytes::copy_from_slice(slice))
         }
     }
@@ -93,24 +110,15 @@ impl Chunk {
         // 当前内部索引和连续块
         let mut result = Vec::new();
         let mut i = 0;
-        while i < self.element_amount {
+        while i < self.block_info.element_amount {
             if self.is_some(i) {
-                if self.element_actual_size[i] != self.element_size {
-                    i += 1;
-                    let slice = unsafe { self.slice(i-1..i).unwrap() };
-                    result.push((i-1, Bytes::copy_from_slice(slice)));
-                    continue;
-                }
                 let start = i;
                 // 找到连续为1的区间
                 i += 1;
                 while self.is_some(i) {
                     i += 1;
-                    if self.element_actual_size[i] != self.element_size {
-                        break;
-                    }
                 }
-                
+
                 // 将该区间的元素复制到一个新的 Bytes 中
                 let slice = unsafe { self.slice(start..i).unwrap() };
                 result.push((start, Bytes::copy_from_slice(slice)));
@@ -123,9 +131,12 @@ impl Chunk {
 
     #[inline]
     unsafe fn index_mut(&mut self, index: usize, actual_size: usize) -> &mut [u8] {
-        let start = index * self.element_size;
+        let start = index * self.block_info.element_size;
         unsafe {
-            slice::from_raw_parts_mut(self.data.as_mut_ptr().add(start) as *mut u8, actual_size)
+            slice::from_raw_parts_mut(
+                self.elements.as_mut_ptr().add(start) as *mut u8,
+                actual_size,
+            )
         }
     }
 
@@ -140,13 +151,22 @@ impl Chunk {
         if index.start == index.end {
             return None;
         }
-        let start = index.start * self.element_size;
-        let end = index.end * self.element_size;
-        
-        let end_size = self.element_actual_size[index.end];
-        let len = end - start - (self.element_size - end_size);
-        unsafe { Some(slice::from_raw_parts(self.data.as_ptr().add(start) as *const u8, len)) }
+        let start = index.start * self.block_info.element_size;
+        let end = index.end * self.block_info.element_size;
 
+        let end_size = match self.last_element_size {
+            Some(last_element_size) => {
+                last_element_size
+            }
+            None => self.block_info.element_size,
+        };
+        let len = end - start - (self.block_info.element_size - end_size);
+        unsafe {
+            Some(slice::from_raw_parts(
+                self.elements.as_ptr().add(start) as *const u8,
+                len,
+            ))
+        }
     }
 }
 
@@ -158,47 +178,49 @@ impl AsRef<Chunk> for Chunk {
 
 #[derive(Debug)]
 pub struct ChunkedBuffer {
-    element_amount: usize, // 块固定的大小
-    element_size: usize, // 每个块内元素的大小
-    block_size: usize, // 每个块固定的大小
+    info: Arc<BlockInfo>,
     // 使用 HashMap 保存各个块：key 为块编号，value 为块数据（使用 Option<T> 保存，便于记录未填充部分）
     blocks: HashMap<usize, Chunk>,
 }
 
 impl ChunkedBuffer {
     #[inline]
-    pub fn new(element_amount: usize, element_size: usize) -> Self {
+    pub fn new(info: Arc<BlockInfo>) -> Self {
         Self {
-            element_amount,
-            element_size,
-            block_size: element_amount * element_size,
+            info,
             blocks: HashMap::new(),
         }
     }
 
     pub fn insert(&mut self, index: usize, item: impl Borrow<[u8]>) {
         // index is the position of single element in the whole Buffer
-        let block_index = index / self.block_size;
-        
-        let remainder = index % self.block_size;
-        if remainder % self.element_size != 0 {
+        let block_index = index / self.info.block_size;
+
+        let remainder = index % self.info.block_size;
+        if remainder % self.info.element_size != 0 {
             panic!("Remainder contribute to wrong memory struct");
         }
-        let pos_in_block = remainder / self.element_size;
+        let pos_in_block = remainder / self.info.element_size;
 
-        if item.borrow().len() > self.element_size {
+        if item.borrow().len() > self.info.element_size {
             panic!("Item out of bounds");
         }
         
+        let last_element_size = if block_index == self.info.total_element_counts / self.info.element_amount {
+            Some(item.borrow().len() % self.info.element_size)
+        } else { 
+            None
+        };
+
         let block = self
             .blocks
             .entry(block_index)
-            .or_insert(Chunk::new(self.element_amount, self.element_size));
-        
+            .or_insert(Chunk::new(self.info.clone(), last_element_size));
+
         if block.is_some(pos_in_block) {
             panic!("Index already exists");
         }
-        
+
         block.insert(pos_in_block, item);
     }
 
@@ -224,10 +246,9 @@ impl ChunkedBuffer {
             let block_index = *keys.next()?;
             if self.blocks[&block_index].is_full() {
                 return Some(BufferEntryFull {
-                    file_start: (self.block_size * block_index) as u64,
+                    file_start: (self.info.block_size * block_index) as u64,
                     chunk: self.blocks.remove(&block_index)?,
                 });
-                
             }
             continue;
         }
@@ -242,15 +263,14 @@ impl ChunkedBuffer {
             let block_index = *keys.next()?;
             if !self.blocks[&block_index].is_full() {
                 return Some(BufferEntryNotFull {
-                    file_start: (self.block_size * block_index) as u64,
-                    element_size: self.element_size,
+                    file_start: (self.info.block_size * block_index) as u64,
+                    element_size: self.info.element_size,
                     chunk: self.blocks.remove(&block_index)?,
                 });
             }
             continue;
         }
     }
-    
 }
 
 #[derive(Debug)]
@@ -263,8 +283,8 @@ impl<B: Borrow<Chunk>> BufferEntryFull<B> {
     #[inline]
     pub async fn write_file(&self, file: &mut BufWriter<tokio::fs::File>) {
         file.seek(std::io::SeekFrom::Start(self.file_start))
-        .await
-        .expect("Failed to seek");
+            .await
+            .expect("Failed to seek");
         file.write_all(
             self.chunk
                 .borrow()
@@ -287,9 +307,11 @@ impl<B: Borrow<Chunk>> BufferEntryNotFull<B> {
     #[inline]
     pub async fn write_file(&self, file: &mut BufWriter<tokio::fs::File>) {
         for (index, bytes) in self.chunk.borrow().non_full_bytes().iter() {
-            file.seek(std::io::SeekFrom::Start(self.file_start + (*index * self.element_size) as u64))
-                .await
-                .expect("Failed to seek");
+            file.seek(std::io::SeekFrom::Start(
+                self.file_start + (*index * self.element_size) as u64,
+            ))
+            .await
+            .expect("Failed to seek");
             file.write_all(bytes.as_ref())
                 .await
                 .expect("Failed to write chunk");
@@ -308,7 +330,14 @@ mod tests {
             slice[i] = i as isize;
         }
         let slice = unsafe { slice::from_raw_parts(slice.as_ptr() as *const u8, slice.len() * 8) };
-        let mut chunk = Chunk::new(2, slice.len());
+        let mut chunk = Chunk::new(Arc::new({
+            BlockInfo {
+                element_size: size_of::<usize>() * 10,
+                element_amount: 2,
+                block_size: 2 * (size_of::<usize>() * 10),
+                total_element_counts: 2,
+            }
+        }), None);
         let mut slice2 = [0_isize; 10];
         for i in 0..10 {
             slice2[i] = i as isize;
@@ -328,13 +357,19 @@ mod tests {
     }
     #[test]
     fn test_chunk_buff() {
-        let mut buff = ChunkedBuffer::new(5,1);
+        let mut buff = ChunkedBuffer::new(Arc::new(
+            BlockInfo {
+                element_size: 1,
+                element_amount: 5,
+                block_size: 5,
+                total_element_counts: 5,
+            }
+        ));
         buff.insert(0, [0]);
         buff.insert(2, [1]);
         buff.insert(1, [1]);
         buff.insert(3, [2]);
         buff.insert(4, [3]);
         assert!(buff.take_first_full_chunk().is_some());
-        
     }
 }

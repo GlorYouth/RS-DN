@@ -3,7 +3,7 @@ mod utils;
 use std::io::Read;
 // use lazy_static::lazy_static;
 // use regex::Regex;
-use crate::utils::ChunkedBuffer;
+use crate::utils::{BlockInfo, ChunkedBuffer};
 use md5::{Digest, Md5};
 use std::sync::Arc;
 
@@ -27,17 +27,31 @@ impl ParallelDownloader {
 
     async fn start(self, threads: usize) {
         let total_size = self.get_size().await;
-        let (tx, rx) = tokio::sync::mpsc::channel::<(usize, bytes::Bytes)>(50);
-        let num_chunks = (total_size + ELEMENT_SIZE - 1) / ELEMENT_SIZE; // 相当于有余数则+1
+        let total_element_counts = (total_size + ELEMENT_SIZE - 1) / ELEMENT_SIZE; // 相当于有余数则+1
+        let last_element_size =
+            std::cmp::min(total_element_counts * ELEMENT_SIZE - 1, total_size - 1);
 
-        let mut tasks = Vec::with_capacity(num_chunks + 1);
-        let write = Self::write(self.output_path.clone(), rx).await;
+        let info = Arc::new(BlockInfo {
+            element_size: ELEMENT_SIZE,
+            element_amount: 16,
+            block_size: 16 * ELEMENT_SIZE,
+            total_element_counts,
+        });
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<(usize, bytes::Bytes)>(50);
+        let mut tasks = Vec::with_capacity(total_element_counts + 1);
+
+        let write = Self::write(self.output_path.clone(), rx, info).await;
 
         let semaphore = Arc::new(tokio::sync::Semaphore::new(threads)); // 限制为20并发
 
-        for i in 0..num_chunks {
+        for i in 0..total_element_counts {
             let start = i * ELEMENT_SIZE;
-            let end = std::cmp::min(start + ELEMENT_SIZE - 1, total_size - 1);
+            let end = if i != total_element_counts - 1 {
+                start + ELEMENT_SIZE - 1
+            } else {
+                last_element_size
+            };
 
             // 异步下载块
             let task = tokio::spawn(self.clone().download_chunk(
@@ -59,6 +73,7 @@ impl ParallelDownloader {
     async fn write(
         output_path: Arc<String>,
         mut rx: tokio::sync::mpsc::Receiver<(usize, bytes::Bytes)>,
+        info: Arc<BlockInfo>,
     ) -> tokio::task::JoinHandle<()> {
         let file = tokio::fs::OpenOptions::new()
             .write(true)
@@ -69,8 +84,7 @@ impl ParallelDownloader {
         let mut file = tokio::io::BufWriter::with_capacity(ELEMENT_SIZE, file);
 
         tokio::task::spawn(async move {
-            let amount = 16;
-            let mut buffer = ChunkedBuffer::new(amount,ELEMENT_SIZE);
+            let mut buffer = ChunkedBuffer::new(info);
             while let Some((start, bytes)) = rx.recv().await {
                 buffer.insert(start, bytes);
 
