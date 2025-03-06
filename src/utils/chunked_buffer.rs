@@ -1,5 +1,3 @@
-use tokio::io::AsyncWriteExt;
-use tokio::io::AsyncSeekExt;
 use bytes::Bytes;
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -7,6 +5,8 @@ use std::mem::MaybeUninit;
 use std::ops::Range;
 use std::slice;
 use std::sync::Arc;
+use tokio::io::AsyncSeekExt;
+use tokio::io::AsyncWriteExt;
 
 #[derive(Debug)]
 pub struct BlockInfo {
@@ -41,7 +41,6 @@ impl BlockInfo {
         (self.total_size - 1) / self.block_size
     }
 }
-
 
 #[derive(Debug)]
 pub struct Chunk {
@@ -90,7 +89,8 @@ impl Chunk {
         if let Some(size) = self.last_element_size {
             if size != self.info.element_size {
                 self.is_not_full_element_exist = true;
-            } else {}
+            } else {
+            }
         } else if bytes.len() < self.info.element_size {
             panic!("Element size too small");
         }
@@ -166,7 +166,8 @@ impl Chunk {
             slice::from_raw_parts_mut(
                 self.elements.as_mut_ptr().add(start) as *mut u8,
                 slice.len(),
-            ).copy_from_slice(slice);
+            )
+            .copy_from_slice(slice);
         }
     }
 
@@ -185,9 +186,7 @@ impl Chunk {
         let end = index.end * self.info.element_size;
 
         let end_size = match self.last_element_size {
-            Some(last_element_size) => {
-                last_element_size
-            }
+            Some(last_element_size) => last_element_size,
             None => self.info.element_size,
         };
         let len = end - start - (self.info.element_size - end_size);
@@ -312,10 +311,13 @@ pub struct BufferEntryFull<B: Borrow<Chunk>> {
 impl<B: Borrow<Chunk>> BufferEntryFull<B> {
     #[inline]
     pub async fn write_file(&self, file: &mut tokio::fs::File) {
-        file.seek(std::io::SeekFrom::Start(self.file_start)).await
+        file.seek(std::io::SeekFrom::Start(self.file_start))
+            .await
             .expect("Failed to seek");
         let bytes = self.chunk.borrow().full_bytes().unwrap();
-        file.write_all(bytes.as_ref()).await.expect("Failed to write chunk");
+        file.write_all(bytes.as_ref())
+            .await
+            .expect("Failed to write chunk");
         file.flush().await.expect("Failed to flush chunk");
     }
 }
@@ -333,8 +335,8 @@ impl<B: Borrow<Chunk>> BufferEntryNotFull<B> {
             file.seek(std::io::SeekFrom::Start(
                 self.file_start + (*index * self.element_size) as u64,
             ))
-                .await
-                .expect("Failed to seek");
+            .await
+            .expect("Failed to seek");
             file.write_all(bytes.as_ref())
                 .await
                 .expect("Failed to write chunk");
@@ -345,12 +347,12 @@ impl<B: Borrow<Chunk>> BufferEntryNotFull<B> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Read;
     use super::*;
+    use std::io::Read;
 
     #[test]
     fn test_chunk_full_bytes() {
-        let info = Arc::new(BlockInfo::new(16, 16, 16*16));
+        let info = Arc::new(BlockInfo::new(16, 16, 16 * 16));
         let mut chunk = Chunk::new(info.clone(), None);
         let mut vec = Vec::with_capacity(info.element_amount);
         for i in 0..info.element_amount {
@@ -364,13 +366,13 @@ mod tests {
         let bytes = chunk.full_bytes().unwrap();
         for i in 0..info.element_amount {
             for j in 0..info.element_size {
-                assert_eq!(bytes[i*info.element_size + j], vec[i][j]);
+                assert_eq!(bytes[i * info.element_size + j], vec[i][j]);
             }
         }
     }
     #[tokio::test]
     async fn test_chunk_buff() {
-        let info = Arc::new(BlockInfo::new(16, 16, 16*16));
+        let info = Arc::new(BlockInfo::new(16, 16, 16 * 16));
         let mut buffer = ChunkedBuffer::new(info.clone());
         let mut vec = Vec::with_capacity(info.element_amount);
         for i in 0..info.element_amount {
@@ -378,7 +380,7 @@ mod tests {
             for _ in 0..info.element_size {
                 in_vec.push(rand::random::<u8>());
             }
-            buffer.insert(i*info.element_size, in_vec.clone());
+            buffer.insert(i * info.element_size, in_vec.clone());
             vec.push(in_vec);
         }
         let mut file = tokio::fs::OpenOptions::new()
@@ -388,14 +390,18 @@ mod tests {
             .await
             .expect("Failed to open output file");
 
-        buffer.take_first_full_chunk().unwrap().write_file(&mut file).await;
+        buffer
+            .take_first_full_chunk()
+            .unwrap()
+            .write_file(&mut file)
+            .await;
         let file = std::fs::File::open("check_buff").expect("Failed to open output file");
         let mut reader = std::io::BufReader::new(file);
-        let mut buff = [0; 16*16];
+        let mut buff = [0; 16 * 16];
         let _ = reader.read(&mut buff).expect("Failed to read from file");
         for i in 0..info.element_amount {
             for j in 0..info.element_size {
-                assert_eq!(buff[i*info.element_size + j], vec[i][j]);
+                assert_eq!(buff[i * info.element_size + j], vec[i][j]);
             }
         }
     }

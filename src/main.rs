@@ -128,8 +128,8 @@ impl ParallelDownloader {
                     Ok(())
                 }),
         )
-            .await
-            .is_err()
+        .await
+        .is_err()
         {
             if retries == 3 {
                 panic!("Too many retries left");
@@ -167,8 +167,8 @@ fn main() {
             "http://192.168.2.3:5244/d/outer/local/output.mp4".into(), // https://alist.gloryouth.com/d/outer/edu/%E6%88%90%E7%89%87/%E8%8A%82%E7%9B%AE1_%E6%94%B9_ai.mp4
             path.into(),
         )
-            .start(20)
-            .await;
+        .start(20)
+        .await;
         let mut hasher = Md5::new();
         let file = std::fs::File::open(path).expect("Failed to open output file");
         let mut reader = std::io::BufReader::new(file);
