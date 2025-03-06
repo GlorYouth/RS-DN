@@ -1,41 +1,13 @@
 // use lazy_static::lazy_static;
 // use regex::Regex;
 use crate::utils::{BlockInfo, ChunkedBuffer};
-use lazy_static::lazy_static;
-use regex::Regex;
 use std::sync::Arc;
 
 const ELEMENT_SIZE: usize = 6 * 1024 * 1024; // 每个最小元素大小为6MB
 
-#[derive(Clone)]
-enum Downloader {
-    Reqwest(crate::utils::Request),
-    Quinn(crate::utils::Quinn),
-}
-
-impl Downloader {
-    #[inline]
-    async fn download_chunk(
-        self,
-        start: usize,
-        end: usize,
-        tx: tokio::sync::mpsc::Sender<(usize, bytes::Bytes)>,
-        semaphore: Arc<tokio::sync::Semaphore>,
-    ) {
-        match self {
-            Downloader::Reqwest(req) => {
-                req.download_chunk(start, end, tx, semaphore).await;
-            }
-            Downloader::Quinn(quinn) => {
-                quinn.download_chunk(start, end, tx, semaphore).await;
-            }
-        }
-    }
-}
-
 pub struct ParallelDownloader {
     output_path: Arc<String>,
-    downloader: Downloader,
+    downloader: crate::utils::Request,
     info: Arc<BlockInfo>,
 }
 
@@ -47,24 +19,7 @@ impl ParallelDownloader {
             .send()
             .await
             .expect("error during request");
-        let downloader = match response.headers().get("alt-svc") {
-            None => Downloader::Reqwest(crate::utils::Request::new(client, url)),
-            Some(value) => {
-                lazy_static! {
-                    static ref HASHTAG_REGEX: Regex =
-                        Regex::new(r#"h3=":([1-9][0-9]{1,3}|[1-9]|[1-5][0-9]{4}|6553[0-5])""#)
-                            .unwrap();
-                }
-                let port = HASHTAG_REGEX.captures(value.to_str().unwrap()).unwrap()[1]
-                    .parse::<u16>()
-                    .unwrap();
-                Downloader::Quinn(crate::utils::Quinn::new(
-                    response.remote_addr().expect("No remote addr").ip(),
-                    port,
-                    url,
-                ))
-            }
-        };
+        let downloader = crate::utils::Request::new(client, url);
         let total_size = response
             .headers()
             .get("Content-Length")
