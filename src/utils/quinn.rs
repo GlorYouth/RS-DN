@@ -35,7 +35,13 @@ impl Quinn {
         let mut client_endpoint = h3_quinn::Endpoint::client(std::net::SocketAddr::new(addr, 0))
             .expect("Failed to create client");
 
-        let url = url::Url::parse(&self.url).expect("Failed to parse url");
+        let uri = self.url.parse::<http::Uri>().expect("Failed to parse url");
+
+        if uri.scheme() != Some(&http::uri::Scheme::HTTPS) {
+            panic!("Only HTTPS URI are supported");
+        }
+
+        let auth = uri.authority().expect("Url must have an authority").clone();
 
         let range = format!("bytes={}-{}", start, end);
 
@@ -66,7 +72,7 @@ impl Quinn {
         client_endpoint.set_default_client_config(client_config);
 
         let conn = client_endpoint
-            .connect(self.remote_addr, url.domain().expect("Parse domain error"))
+            .connect(self.remote_addr, auth.host())
             .unwrap()
             .await
             .expect("Connect error");

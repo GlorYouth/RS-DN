@@ -58,7 +58,6 @@ impl ParallelDownloader {
                 let port = HASHTAG_REGEX.captures(value.to_str().unwrap()).unwrap()[1]
                     .parse::<u16>()
                     .unwrap();
-                url::Url::parse(url.as_str()).expect("URL is invalid");
                 Downloader::Quinn(crate::utils::Quinn::new(
                     response.remote_addr().expect("No remote addr").ip(),
                     port,
