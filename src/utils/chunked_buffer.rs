@@ -222,10 +222,10 @@ impl ChunkedBuffer {
         let block_index = start / self.info.block_size;
 
         let remainder = start % self.info.block_size;
-        if remainder % self.info.element_amount != 0 {
+        if remainder % self.info.element_size != 0 {
             panic!("Remainder contribute to wrong memory struct");
         }
-        let pos_in_block = remainder / self.info.element_amount;
+        let pos_in_block = remainder / self.info.element_size;
 
         if bytes.borrow().len() > self.info.element_size {
             panic!("Item out of bounds");
