@@ -217,17 +217,17 @@ impl ChunkedBuffer {
         }
     }
 
-    pub fn insert(&mut self, index: usize, item: impl Borrow<[u8]>) {
+    pub fn insert(&mut self, start: usize, bytes: impl Borrow<[u8]>) {
         // index is the position of single element in the whole Buffer
-        let block_index = index / self.info.block_size;
+        let block_index = start / self.info.block_size;
 
-        let remainder = index % self.info.block_size;
-        if remainder % self.info.element_size != 0 {
+        let remainder = start % self.info.block_size;
+        if remainder % self.info.element_amount != 0 {
             panic!("Remainder contribute to wrong memory struct");
         }
-        let pos_in_block = remainder / self.info.element_size;
+        let pos_in_block = remainder / self.info.element_amount;
 
-        if item.borrow().len() > self.info.element_size {
+        if bytes.borrow().len() > self.info.element_size {
             panic!("Item out of bounds");
         }
         
@@ -246,7 +246,7 @@ impl ChunkedBuffer {
             panic!("Index already exists");
         }
 
-        block.insert(pos_in_block, item);
+        block.insert(pos_in_block, bytes);
     }
 
     // #[inline]
