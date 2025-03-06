@@ -62,7 +62,7 @@ impl ParallelDownloader {
                 Downloader::Quinn(crate::utils::Quinn::new(
                     response.remote_addr().expect("No remote addr").ip(),
                     port,
-                    url
+                    url,
                 ))
             }
         };
