@@ -10,10 +10,10 @@ use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
 #[derive(Debug)]
 pub struct BlockInfo {
     element_size: usize,   // 元素占用空间
-    element_amount: usize, // 总元素个数
+    element_amount: usize, // 每个块的元素个数
 
     block_size: usize, // 每个块固定的大小
-    total_size: usize,
+    total_size: usize, // 总文件大小
 }
 
 impl BlockInfo {
@@ -29,12 +29,15 @@ impl BlockInfo {
     
     #[inline]
     fn get_last_element_size(&self) -> usize {
-        (self.total_size - 1) % self.element_size
+        match self.total_size % self.element_size { 
+            0 => self.element_size,
+            size => size,
+        }
     }
     
     #[inline]
     fn get_last_block_index(&self) -> usize {
-        (self.total_size) / self.block_size
+        (self.total_size - 1) / self.block_size
     }
 }
 
@@ -68,19 +71,18 @@ impl Chunk {
     }
 
     #[inline]
-    fn insert(&mut self, index: usize, value: impl Borrow<[u8]>) {
-        // Index is the position of value in Chunk
-        if index >= self.info.element_amount {
+    fn insert(&mut self, pos_in_block: usize, bytes: impl Borrow<[u8]>) {
+        if pos_in_block >= self.info.element_amount {
             panic!("Index out of bounds");
         }
 
-        let value = value.borrow();
+        let bytes = bytes.borrow();
 
-        if value.len() > self.info.element_size {
+        if bytes.len() > self.info.element_size {
             panic!("Wrong length");
         }
 
-        if self.is_some(index) {
+        if self.is_some(pos_in_block) {
             panic!("Element added twice");
         }
 
@@ -88,14 +90,13 @@ impl Chunk {
             if size != self.info.element_size {
                 self.is_not_full_element_exist = true;
             } else {}
-        } else if value.len() < self.info.element_size {
+        } else if bytes.len() < self.info.element_size {
             panic!("Element size too small");
         }
         
-        unsafe {
-            self.index_mut(index, value.len()).copy_from_slice(value);
-        }
-        self.avail |= 1 << index;
+        self.element_copy_from_slice(bytes, pos_in_block);
+        
+        self.avail |= 1 << pos_in_block;
     }
 
     #[inline]
@@ -154,14 +155,16 @@ impl Chunk {
         result
     }
 
-    #[inline]
-    unsafe fn index_mut(&mut self, index: usize, actual_size: usize) -> &mut [u8] {
-        let start = index * self.info.element_size;
+    fn element_copy_from_slice(&mut self, slice: &[u8], pos_in_block: usize) {
+        if slice.len() > self.info.element_size {
+            panic!("Element size too big");
+        }
+        let start = pos_in_block * self.info.element_size;
         unsafe {
             slice::from_raw_parts_mut(
                 self.elements.as_mut_ptr().add(start) as *mut u8,
-                actual_size,
-            )
+                slice.len(),
+            ).copy_from_slice(slice);
         }
     }
 
@@ -218,7 +221,7 @@ impl ChunkedBuffer {
     }
 
     pub fn insert(&mut self, start: usize, bytes: impl Borrow<[u8]>) {
-        // index is the position of single element in the whole Buffer
+        // start is the position of the first byte in the whole buffer
         let block_index = start / self.info.block_size;
 
         let remainder = start % self.info.block_size;
