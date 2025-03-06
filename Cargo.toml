@@ -12,10 +12,10 @@ bytes = "1.10.0"
 futures = "0.3.31"
 md-5 = "0.10.6"
 rand = "0.9.0"
-quinn = { version = "0.11", default-features = false, features = [
-    "ring",
-] }
+quinn = { version = "0.11", features = ["ring"] }
 h3-quinn = "0.0.7"
 h3 = "0.0.6"
 http = "1.2.0"
 url = "2.5.4"
+rustls = "0.23.23"
+rustls-native-certs = "0.8.1"
