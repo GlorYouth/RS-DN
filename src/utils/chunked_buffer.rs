@@ -18,7 +18,7 @@ pub struct BlockInfo {
 
 impl BlockInfo {
     #[inline]
-    pub fn new(element_size: usize, element_amount: usize, total_size: usize) -> Self {
+    pub const fn new(element_size: usize, element_amount: usize, total_size: usize) -> Self {
         Self {
             element_size,
             element_amount,
@@ -155,6 +155,7 @@ impl Chunk {
         result
     }
 
+    #[inline]
     fn element_copy_from_slice(&mut self, slice: &[u8], pos_in_block: usize) {
         if slice.len() > self.info.element_size {
             panic!("Element size too big");
@@ -349,55 +350,58 @@ impl<B: Borrow<Chunk>> BufferEntryNotFull<B> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
     use super::*;
 
     #[test]
-    fn test_chunk() {
-        let mut slice = [0_isize; 10];
-        for i in 0..10 {
-            slice[i] = i as isize;
-        }
-        let slice = unsafe { slice::from_raw_parts(slice.as_ptr() as *const u8, slice.len() * 8) };
-        let mut chunk = Chunk::new(Arc::new({
-            BlockInfo {
-                element_size: size_of::<usize>() * 10,
-                element_amount: 2,
-                block_size: 2 * (size_of::<usize>() * 10),
-                total_size: 2 * (size_of::<usize>() * 10),
+    fn test_chunk_full_bytes() {
+        let info = Arc::new(BlockInfo::new(16, 16, 16*16));
+        let mut chunk = Chunk::new(info.clone(), None);
+        let mut vec = Vec::with_capacity(info.element_amount);
+        for i in 0..info.element_amount {
+            let mut in_vec = Vec::with_capacity(info.element_size);
+            for _ in 0..info.element_size {
+                in_vec.push(rand::random::<u8>());
             }
-        }), None);
-        let mut slice2 = [0_isize; 10];
-        for i in 0..10 {
-            slice2[i] = i as isize;
+            chunk.insert(i, in_vec.clone());
+            vec.push(in_vec);
         }
-        let slice2 =
-            unsafe { slice::from_raw_parts(slice2.as_ptr() as *const u8, slice2.len() * 8) };
-        chunk.insert(0, slice);
-        chunk.insert(1, slice2);
-
-        assert!(
-            chunk
-                .full_bytes()
-                .unwrap()
-                .iter()
-                .eq(slice.iter().chain(slice2.iter()))
-        );
+        let bytes = chunk.full_bytes().unwrap();
+        for i in 0..info.element_amount {
+            for j in 0..info.element_size {
+                assert_eq!(bytes[i*info.element_size + j], vec[i][j]);
+            }
+        }
     }
-    #[test]
-    fn test_chunk_buff() {
-        let mut buff = ChunkedBuffer::new(Arc::new(
-            BlockInfo {
-                element_size: 1,
-                element_amount: 5,
-                block_size: 5,
-                total_size: 5,
+    #[tokio::test]
+    async fn test_chunk_buff() {
+        let info = Arc::new(BlockInfo::new(16, 16, 16*16));
+        let mut buff = ChunkedBuffer::new(info.clone());
+        let mut vec = Vec::with_capacity(info.element_amount);
+        for i in 0..info.element_amount {
+            let mut in_vec = Vec::with_capacity(info.element_size);
+            for _ in 0..info.element_size {
+                in_vec.push(i as u8);
             }
-        ));
-        buff.insert(0, [0]);
-        buff.insert(2, [1]);
-        buff.insert(1, [1]);
-        buff.insert(3, [2]);
-        buff.insert(4, [3]);
-        assert!(buff.take_first_full_chunk().is_some());
+            buff.insert(i*info.element_size, in_vec.clone());
+            vec.push(in_vec);
+        }
+        let file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open("check_buff")
+            .await
+            .expect("Failed to open output file");
+        let mut file = BufWriter::with_capacity(info.element_size, file);
+        buff.take_first_full_chunk().unwrap().write_file(&mut file).await;
+        let file = std::fs::File::open("check_buff").expect("Failed to open output file");
+        let mut reader = std::io::BufReader::new(file);
+        let mut buff = [0; 16*16];
+        let _ = reader.read(&mut buff).expect("Failed to read from file");
+        for i in 0..info.element_amount {
+            for j in 0..info.element_size {
+                assert_eq!(buff[i*info.element_size + j], vec[i][j]);
+            }
+        }
     }
 }
