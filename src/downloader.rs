@@ -2,6 +2,8 @@
 // use regex::Regex;
 use crate::utils::{BlockInfo, ChunkedBuffer};
 use std::sync::Arc;
+use lazy_static::lazy_static;
+use regex::Regex;
 
 const ELEMENT_SIZE: usize = 6 * 1024 * 1024; // 每个最小元素大小为6MB
 
@@ -91,12 +93,25 @@ impl ParallelDownloader {
             .send()
             .await
             .expect("error during request");
-        response
-            .headers()
-            .get("Content-Length")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<usize>().ok())
-            .expect("Content-Length is invalid")
+        match response.headers().get("alt-svc") {
+            None => {
+                response
+                    .headers()
+                    .get("Content-Length")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .expect("Content-Length is invalid")
+            }
+            Some(str) => {
+                lazy_static! {
+                    static ref HASHTAG_REGEX: Regex =
+                        Regex::new(r#"h3=":([1-9][0-9]{1,3}|[1-9]|[1-5][0-9]{4}|6553[0-5])""#).unwrap();
+                }
+                let port = HASHTAG_REGEX.captures(str.to_str().unwrap()).unwrap()[1].parse::<u16>().unwrap();
+                todo!()
+            }
+        }
+        
     }
 
     async fn download_chunk(
@@ -143,6 +158,38 @@ impl Clone for ParallelDownloader {
             url: self.url.clone(),
             client: self.client.clone(),
             output_path: self.output_path.clone(),
+        }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use lazy_static::lazy_static;
+    use regex::Regex;
+
+    #[test]
+    fn test_parse() {
+        lazy_static! {
+            static ref HASHTAG_REGEX: Regex =
+                Regex::new(r#"h3=":([1-9][0-9]{1,3}|[1-9]|[1-5][0-9]{4}|6553[0-5])""#).unwrap();
+        }
+
+        for i in -1000000_i64..=1000000_i64 {
+            let str = format!(r#"h3=":{}""#, i);
+            if let Some(v) = HASHTAG_REGEX
+                .captures(str.as_str())
+                .and_then(|m| m.get(1))
+                .and_then(|m| {
+                    if i > 0 && i <= u16::MAX as i64 {
+                        m.as_str().parse::<u16>().ok().map(|u| u as i64)
+                    } else {
+                        (!m.as_str().parse::<u16>().is_ok()).then_some(i)
+                    }
+                })
+            {
+                assert_eq!(v, i);
+            }
         }
     }
 }
