@@ -40,6 +40,11 @@ impl BlockInfo {
     fn get_last_block_index(&self) -> usize {
         (self.total_size - 1) / self.block_size
     }
+
+    #[inline]
+    pub fn get_total_size(&self) -> usize {
+        self.total_size
+    }
 }
 
 #[derive(Debug)]

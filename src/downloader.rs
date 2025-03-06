@@ -1,30 +1,86 @@
 // use lazy_static::lazy_static;
 // use regex::Regex;
 use crate::utils::{BlockInfo, ChunkedBuffer};
-use std::sync::Arc;
 use lazy_static::lazy_static;
 use regex::Regex;
+use std::sync::Arc;
 
 const ELEMENT_SIZE: usize = 6 * 1024 * 1024; // 每个最小元素大小为6MB
 
+#[derive(Clone)]
+enum Downloader {
+    Reqwest(crate::utils::Request),
+    Quinn(crate::utils::Quinn),
+}
+
+impl Downloader {
+    #[inline]
+    async fn download_chunk(
+        self,
+        start: usize,
+        end: usize,
+        tx: tokio::sync::mpsc::Sender<(usize, bytes::Bytes)>,
+        semaphore: Arc<tokio::sync::Semaphore>,
+    ) {
+        match self {
+            Downloader::Reqwest(req) => {
+                req.download_chunk(start, end, tx, semaphore).await;
+            }
+            Downloader::Quinn(quinn) => {
+                quinn.download_chunk(start, end, tx, semaphore).await;
+            }
+        }
+    }
+}
+
 pub struct ParallelDownloader {
-    url: Arc<String>,
-    client: reqwest::Client,
     output_path: Arc<String>,
+    downloader: Downloader,
+    info: Arc<BlockInfo>,
 }
 
 impl ParallelDownloader {
-    #[inline]
-    pub fn new(url: String, output_path: String) -> Self {
+    pub async fn new(url: String, output_path: String) -> Self {
+        let client = reqwest::Client::new();
+        let response = client
+            .head(url.as_str())
+            .send()
+            .await
+            .expect("error during request");
+        let downloader = match response.headers().get("alt-svc") {
+            None => Downloader::Reqwest(crate::utils::Request::new(client, url)),
+            Some(value) => {
+                lazy_static! {
+                    static ref HASHTAG_REGEX: Regex =
+                        Regex::new(r#"h3=":([1-9][0-9]{1,3}|[1-9]|[1-5][0-9]{4}|6553[0-5])""#)
+                            .unwrap();
+                }
+                let port = HASHTAG_REGEX.captures(value.to_str().unwrap()).unwrap()[1]
+                    .parse::<u16>()
+                    .unwrap();
+                url::Url::parse(url.as_str()).expect("URL is invalid");
+                Downloader::Quinn(crate::utils::Quinn::new(
+                    response.remote_addr().expect("No remote addr").ip(),
+                    port,
+                    url
+                ))
+            }
+        };
+        let total_size = response
+            .headers()
+            .get("Content-Length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<usize>().ok())
+            .expect("Content-Length is invalid");
         ParallelDownloader {
-            url: Arc::new(url),
-            client: reqwest::Client::new(),
             output_path: Arc::new(output_path),
+            downloader,
+            info: Arc::new(BlockInfo::new(ELEMENT_SIZE, 16, total_size)),
         }
     }
 
     pub async fn start(self, threads: usize) {
-        let total_size = self.get_size().await;
+        let total_size = self.info.get_total_size();
         let total_element_counts = (total_size + ELEMENT_SIZE - 1) / ELEMENT_SIZE; // 相当于有余数则+1
 
         let info = Arc::new(BlockInfo::new(ELEMENT_SIZE, 16, total_size));
@@ -41,7 +97,7 @@ impl ParallelDownloader {
             let end = std::cmp::min(start + ELEMENT_SIZE - 1, total_size - 1);
 
             // 异步下载块
-            let task = tokio::spawn(self.clone().download_chunk(
+            let task = tokio::spawn(self.downloader.clone().download_chunk(
                 start,
                 end,
                 tx.clone(),
@@ -84,84 +140,18 @@ impl ParallelDownloader {
             }
         })
     }
-
-    #[inline]
-    async fn get_size(&self) -> usize {
-        let response = self
-            .client
-            .head(self.url.as_str())
-            .send()
-            .await
-            .expect("error during request");
-        match response.headers().get("alt-svc") {
-            None => {
-                response
-                    .headers()
-                    .get("Content-Length")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse::<usize>().ok())
-                    .expect("Content-Length is invalid")
-            }
-            Some(str) => {
-                lazy_static! {
-                    static ref HASHTAG_REGEX: Regex =
-                        Regex::new(r#"h3=":([1-9][0-9]{1,3}|[1-9]|[1-5][0-9]{4}|6553[0-5])""#).unwrap();
-                }
-                let port = HASHTAG_REGEX.captures(str.to_str().unwrap()).unwrap()[1].parse::<u16>().unwrap();
-                todo!()
-            }
-        }
-        
-    }
-
-    async fn download_chunk(
-        self,
-        start: usize,
-        end: usize,
-        tx: tokio::sync::mpsc::Sender<(usize, bytes::Bytes)>,
-        semaphore: Arc<tokio::sync::Semaphore>,
-    ) {
-        use futures::TryFutureExt;
-
-        let _permit = semaphore.acquire().await;
-        let range = format!("bytes={}-{}", start, end);
-        let mut retries = 0;
-        while std::future::IntoFuture::into_future(
-            self.client
-                .get(self.url.as_str())
-                .header("Range", &range)
-                .send()
-                .and_then(async |response| {
-                    let buffer = response.bytes().await.expect("Failed to read chunk");
-                    tx.send((start, buffer))
-                        .await
-                        .expect("Failed to send buffer");
-                    Ok(())
-                }),
-        )
-        .await
-        .is_err()
-        {
-            if retries == 3 {
-                panic!("Too many retries left");
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(retries)).await;
-            retries += 1;
-        }
-    }
 }
 
 impl Clone for ParallelDownloader {
     #[inline]
     fn clone(&self) -> Self {
         Self {
-            url: self.url.clone(),
-            client: self.client.clone(),
             output_path: self.output_path.clone(),
+            downloader: self.downloader.clone(),
+            info: self.info.clone(),
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

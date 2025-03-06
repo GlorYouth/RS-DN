@@ -18,6 +18,7 @@ fn main() {
             "https://alist.gloryouth.com/d/outer/edu/%E6%88%90%E7%89%87/%E8%8A%82%E7%9B%AE1_%E6%94%B9_ai.mp4".into(), // https://alist.gloryouth.com/d/outer/edu/%E6%88%90%E7%89%87/%E8%8A%82%E7%9B%AE1_%E6%94%B9_ai.mp4
             path.into(),
         )
+            .await
         .start(20)
         .await;
         let mut hasher = Md5::new();
@@ -36,7 +37,6 @@ fn main() {
             "c682de7c1dafda005525f1bc0a282d7d"
         );
     });
-    
+
     return;
 }
-
