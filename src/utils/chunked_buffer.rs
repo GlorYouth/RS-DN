@@ -1,5 +1,5 @@
-use std::io::Write;
-use std::io::Seek;
+use tokio::io::AsyncWriteExt;
+use tokio::io::AsyncSeekExt;
 use bytes::Bytes;
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -27,15 +27,15 @@ impl BlockInfo {
             total_size,
         }
     }
-    
+
     #[inline]
     fn get_last_element_size(&self) -> usize {
-        match self.total_size % self.element_size { 
+        match self.total_size % self.element_size {
             0 => self.element_size,
             size => size,
         }
     }
-    
+
     #[inline]
     fn get_last_block_index(&self) -> usize {
         (self.total_size - 1) / self.block_size
@@ -94,9 +94,9 @@ impl Chunk {
         } else if bytes.len() < self.info.element_size {
             panic!("Element size too small");
         }
-        
+
         self.element_copy_from_slice(bytes, pos_in_block);
-        
+
         self.avail |= 1 << pos_in_block;
     }
 
@@ -107,10 +107,10 @@ impl Chunk {
                 true
             } else if (self.avail + 1) >> self.info.element_amount == 1 {
                 true
-            } else { 
+            } else {
                 false
             }
-        } else { 
+        } else {
             false
         }
     }
@@ -235,10 +235,10 @@ impl ChunkedBuffer {
         if bytes.borrow().len() > self.info.element_size {
             panic!("Item out of bounds");
         }
-        
+
         let last_element_size = if block_index == self.info.get_last_block_index() {
             Some(self.info.get_last_element_size())
-        } else { 
+        } else {
             None
         };
 
@@ -311,12 +311,12 @@ pub struct BufferEntryFull<B: Borrow<Chunk>> {
 
 impl<B: Borrow<Chunk>> BufferEntryFull<B> {
     #[inline]
-    pub fn write_file(&self, file: &mut std::fs::File) {
-        file.seek(std::io::SeekFrom::Start(self.file_start))
+    pub async fn write_file(&self, file: &mut tokio::fs::File) {
+        file.seek(std::io::SeekFrom::Start(self.file_start)).await
             .expect("Failed to seek");
         let bytes = self.chunk.borrow().full_bytes().unwrap();
-        file.write_all(bytes.as_ref()).expect("Failed to write chunk");
-        file.flush().expect("Failed to flush chunk");
+        file.write_all(bytes.as_ref()).await.expect("Failed to write chunk");
+        file.flush().await.expect("Failed to flush chunk");
     }
 }
 
@@ -328,15 +328,17 @@ pub struct BufferEntryNotFull<B: Borrow<Chunk>> {
 
 impl<B: Borrow<Chunk>> BufferEntryNotFull<B> {
     #[inline]
-    pub fn write_file(&self, file: &mut std::fs::File) {
+    pub async fn write_file(&self, file: &mut tokio::fs::File) {
         for (index, bytes) in self.chunk.borrow().non_full_bytes().iter() {
             file.seek(std::io::SeekFrom::Start(
                 self.file_start + (*index * self.element_size) as u64,
             ))
-            .expect("Failed to seek");
+                .await
+                .expect("Failed to seek");
             file.write_all(bytes.as_ref())
+                .await
                 .expect("Failed to write chunk");
-            file.flush().expect("Failed to flush chunk");
+            file.flush().await.expect("Failed to flush chunk");
         }
     }
 }
@@ -366,8 +368,8 @@ mod tests {
             }
         }
     }
-    #[test]
-    fn test_chunk_buff() {
+    #[tokio::test]
+    async fn test_chunk_buff() {
         let info = Arc::new(BlockInfo::new(16, 16, 16*16));
         let mut buffer = ChunkedBuffer::new(info.clone());
         let mut vec = Vec::with_capacity(info.element_amount);
@@ -379,13 +381,14 @@ mod tests {
             buffer.insert(i*info.element_size, in_vec.clone());
             vec.push(in_vec);
         }
-        let mut file = std::fs::OpenOptions::new()
+        let mut file = tokio::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .open("check_buff")
+            .await
             .expect("Failed to open output file");
-        
-        buffer.take_first_full_chunk().unwrap().write_file(&mut file);
+
+        buffer.take_first_full_chunk().unwrap().write_file(&mut file).await;
         let file = std::fs::File::open("check_buff").expect("Failed to open output file");
         let mut reader = std::io::BufReader::new(file);
         let mut buff = [0; 16*16];

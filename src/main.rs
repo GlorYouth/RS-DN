@@ -54,20 +54,21 @@ impl ParallelDownloader {
 
         futures::future::join_all(tasks).await;
         drop(tx);
-        write.expect("Write await error");
+        write.await.expect("Write await error");
         println!("Done");
     }
 
     #[inline]
-    fn write(
+    async fn write(
         output_path: Arc<String>,
         mut rx: tokio::sync::mpsc::Receiver<(usize, bytes::Bytes)>,
         info: Arc<BlockInfo>,
     ) -> tokio::task::JoinHandle<()> {
-        let mut file = std::fs::OpenOptions::new()
+        let mut file = tokio::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .open(output_path.as_str())
+            .await
             .expect("Failed to open output file");
 
         tokio::task::spawn(async move {
@@ -76,12 +77,12 @@ impl ParallelDownloader {
                 buffer.insert(start, bytes);
 
                 while let Some(v) = buffer.take_first_full_chunk() {
-                    v.write_file(&mut file)
+                    v.write_file(&mut file).await;
                 }
             }
 
             while let Some(v) = buffer.take_first_not_full_chunk() {
-                v.write_file(&mut file)
+                v.write_file(&mut file).await;
             }
         })
     }
@@ -127,8 +128,8 @@ impl ParallelDownloader {
                     Ok(())
                 }),
         )
-        .await
-        .is_err()
+            .await
+            .is_err()
         {
             if retries == 3 {
                 panic!("Too many retries left");
@@ -166,8 +167,8 @@ fn main() {
             "http://192.168.2.3:5244/d/outer/local/output.mp4".into(), // https://alist.gloryouth.com/d/outer/edu/%E6%88%90%E7%89%87/%E8%8A%82%E7%9B%AE1_%E6%94%B9_ai.mp4
             path.into(),
         )
-        .start(20)
-        .await;
+            .start(20)
+            .await;
         let mut hasher = Md5::new();
         let file = std::fs::File::open(path).expect("Failed to open output file");
         let mut reader = std::io::BufReader::new(file);
