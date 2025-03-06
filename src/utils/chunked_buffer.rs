@@ -1,3 +1,5 @@
+use std::io::Write;
+use std::io::Seek;
 use bytes::Bytes;
 use std::borrow::Borrow;
 use std::collections::HashMap;
@@ -5,7 +7,6 @@ use std::mem::MaybeUninit;
 use std::ops::Range;
 use std::slice;
 use std::sync::Arc;
-use tokio::io::{AsyncSeekExt, AsyncWriteExt, BufWriter};
 
 #[derive(Debug)]
 pub struct BlockInfo {
@@ -310,19 +311,12 @@ pub struct BufferEntryFull<B: Borrow<Chunk>> {
 
 impl<B: Borrow<Chunk>> BufferEntryFull<B> {
     #[inline]
-    pub async fn write_file(&self, file: &mut BufWriter<tokio::fs::File>) {
+    pub fn write_file(&self, file: &mut std::fs::File) {
         file.seek(std::io::SeekFrom::Start(self.file_start))
-            .await
             .expect("Failed to seek");
-        file.write_all(
-            self.chunk
-                .borrow()
-                .full_bytes()
-                .expect("Failed to get bytes")
-                .as_ref(),
-        )
-        .await
-        .expect("Failed to write chunk");
+        let bytes = self.chunk.borrow().full_bytes().unwrap();
+        file.write_all(bytes.as_ref()).expect("Failed to write chunk");
+        file.flush().expect("Failed to flush chunk");
     }
 }
 
@@ -334,16 +328,15 @@ pub struct BufferEntryNotFull<B: Borrow<Chunk>> {
 
 impl<B: Borrow<Chunk>> BufferEntryNotFull<B> {
     #[inline]
-    pub async fn write_file(&self, file: &mut BufWriter<tokio::fs::File>) {
+    pub fn write_file(&self, file: &mut std::fs::File) {
         for (index, bytes) in self.chunk.borrow().non_full_bytes().iter() {
             file.seek(std::io::SeekFrom::Start(
                 self.file_start + (*index * self.element_size) as u64,
             ))
-            .await
             .expect("Failed to seek");
             file.write_all(bytes.as_ref())
-                .await
                 .expect("Failed to write chunk");
+            file.flush().expect("Failed to flush chunk");
         }
     }
 }
@@ -373,27 +366,26 @@ mod tests {
             }
         }
     }
-    #[tokio::test]
-    async fn test_chunk_buff() {
+    #[test]
+    fn test_chunk_buff() {
         let info = Arc::new(BlockInfo::new(16, 16, 16*16));
-        let mut buff = ChunkedBuffer::new(info.clone());
+        let mut buffer = ChunkedBuffer::new(info.clone());
         let mut vec = Vec::with_capacity(info.element_amount);
         for i in 0..info.element_amount {
             let mut in_vec = Vec::with_capacity(info.element_size);
             for _ in 0..info.element_size {
-                in_vec.push(i as u8);
+                in_vec.push(rand::random::<u8>());
             }
-            buff.insert(i*info.element_size, in_vec.clone());
+            buffer.insert(i*info.element_size, in_vec.clone());
             vec.push(in_vec);
         }
-        let file = tokio::fs::OpenOptions::new()
+        let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .open("check_buff")
-            .await
             .expect("Failed to open output file");
-        let mut file = BufWriter::with_capacity(info.element_size, file);
-        buff.take_first_full_chunk().unwrap().write_file(&mut file).await;
+        
+        buffer.take_first_full_chunk().unwrap().write_file(&mut file);
         let file = std::fs::File::open("check_buff").expect("Failed to open output file");
         let mut reader = std::io::BufReader::new(file);
         let mut buff = [0; 16*16];

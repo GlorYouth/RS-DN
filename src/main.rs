@@ -54,23 +54,21 @@ impl ParallelDownloader {
 
         futures::future::join_all(tasks).await;
         drop(tx);
-        write.await.expect("Write await error");
+        write.expect("Write await error");
         println!("Done");
     }
 
     #[inline]
-    async fn write(
+    fn write(
         output_path: Arc<String>,
         mut rx: tokio::sync::mpsc::Receiver<(usize, bytes::Bytes)>,
         info: Arc<BlockInfo>,
     ) -> tokio::task::JoinHandle<()> {
-        let file = tokio::fs::OpenOptions::new()
+        let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create(true)
             .open(output_path.as_str())
-            .await
             .expect("Failed to open output file");
-        let mut file = tokio::io::BufWriter::with_capacity(ELEMENT_SIZE, file);
 
         tokio::task::spawn(async move {
             let mut buffer = ChunkedBuffer::new(info);
@@ -78,12 +76,12 @@ impl ParallelDownloader {
                 buffer.insert(start, bytes);
 
                 while let Some(v) = buffer.take_first_full_chunk() {
-                    v.write_file(&mut file).await
+                    v.write_file(&mut file)
                 }
             }
 
             while let Some(v) = buffer.take_first_not_full_chunk() {
-                v.write_file(&mut file).await
+                v.write_file(&mut file)
             }
         })
     }
