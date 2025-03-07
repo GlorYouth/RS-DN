@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use std::sync::Arc;
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, SemaphorePermit};
 use tokio::sync::mpsc::Sender;
 
 #[derive(Clone)]
@@ -25,8 +25,8 @@ impl Request {
         control: Arc<ControlConfig>,
     ) {
         use futures::TryFutureExt;
-
-        let _permit = control.semaphore.acquire().await;
+        
+        let _ = control.acquire_semaphore();
         let range = format!("bytes={}-{}", start, end);
         let mut retries = 0;
         while IntoFuture::into_future(
@@ -55,14 +55,39 @@ impl Request {
 }
 
 pub struct ControlConfig {
-    semaphore: Semaphore,
+    semaphore: Option<Semaphore>,
 }
 
 impl ControlConfig {
     #[inline]
-    pub fn new(threads: usize) -> Arc<Self> {
-        Arc::new(Self {
-            semaphore: Semaphore::new(threads),
-        })
+    pub fn new() -> Arc<Self> {
+        Arc::new(Self { semaphore: None })
+    }
+
+    #[inline]
+    pub fn set_threads(&mut self, threads: usize) {
+        self.semaphore = Some(Semaphore::new(threads));
+    }
+
+    #[inline]
+    async fn acquire_semaphore(&self) -> Result<SemaphorePermit<'_>, AcquireError> {
+        match &self.semaphore {
+            None => Err(AcquireError::NoSemaphore),
+            Some(v) => {
+                Ok(v.acquire().await?)
+            }
+        }
+    }
+}
+
+enum AcquireError {
+    NoSemaphore,
+    AcquireError(tokio::sync::AcquireError),
+}
+
+impl From<tokio::sync::AcquireError> for AcquireError {
+    #[inline]
+    fn from(value: tokio::sync::AcquireError) -> Self {
+        Self::AcquireError(value)
     }
 }
