@@ -1,3 +1,4 @@
+use crate::downloader::ControlConfig;
 use std::sync::Arc;
 use tokio_quiche::http3::driver::{InboundFrame, IncomingH3Headers};
 
@@ -21,9 +22,9 @@ impl Quiche {
         start: usize,
         end: usize,
         tx: tokio::sync::mpsc::Sender<(usize, bytes::Bytes)>,
-        semaphore: Arc<tokio::sync::Semaphore>,
+        semaphore: Arc<ControlConfig>,
     ) {
-        let _permit = semaphore.acquire().await;
+        let _permit = semaphore.acquire_semaphore().await;
 
         use tokio_quiche::http3::driver::{ClientH3Event, H3Event};
         use tokio_quiche::quiche::h3;

@@ -1,11 +1,39 @@
-use crate::utils::{BlockInfo, ChunkedBuffer, ControlConfig};
+use crate::utils::{BlockInfo, ChunkedBuffer, Quiche, Request};
+use bytes::Bytes;
+use lazy_static::lazy_static;
+use regex::Regex;
 use std::sync::Arc;
+use tokio::sync::mpsc::Sender;
+use tokio::sync::{Semaphore, SemaphorePermit};
 
 const ELEMENT_SIZE: usize = 6 * 1024 * 1024; // 每个最小元素大小为6MB
 
+#[derive(Clone)]
+pub enum Downloader {
+    Request(Request),
+    Quiche(Quiche),
+}
+
+impl Downloader {
+    #[inline]
+    async fn download_chunk(
+        self,
+        start: usize,
+        end: usize,
+        tx: Sender<(usize, Bytes)>,
+        control: Arc<ControlConfig>,
+    ) {
+        match self {
+            Downloader::Request(v) => v.download_chunk(start, end, tx, control).await,
+            Downloader::Quiche(v) => v.download_chunk(start, end, tx, control).await
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct ParallelDownloader {
     output_path: Arc<String>,
-    downloader: crate::utils::Request,
+    downloader: Downloader,
     info: Arc<BlockInfo>,
 }
 
@@ -17,7 +45,24 @@ impl ParallelDownloader {
             .send()
             .await
             .expect("error during request");
-        let downloader = crate::utils::Request::new(client, url);
+        let downloader = match response.headers().get("alt-svc") {
+            None => Downloader::Request(Request::new(client, url)),
+            Some(value) => {
+                lazy_static! {
+                    static ref HASHTAG_REGEX: Regex =
+                        Regex::new(r#"h3=":([1-9][0-9]{1,3}|[1-9]|[1-5][0-9]{4}|6553[0-5])""#)
+                            .unwrap();
+                }
+                let port = HASHTAG_REGEX.captures(value.to_str().unwrap()).unwrap()[1]
+                    .parse::<u16>()
+                    .unwrap();
+                Downloader::Quiche(Quiche::new(
+                    response.remote_addr().expect("No remote addr").ip(),
+                    port,
+                    url,
+                ))
+            }
+        };
         let total_size = response
             .headers()
             .get("Content-Length")
@@ -96,16 +141,42 @@ impl ParallelDownloader {
     }
 }
 
-impl Clone for ParallelDownloader {
+pub struct ControlConfig {
+    semaphore: Option<Semaphore>,
+}
+
+impl ControlConfig {
     #[inline]
-    fn clone(&self) -> Self {
-        Self {
-            output_path: self.output_path.clone(),
-            downloader: self.downloader.clone(),
-            info: self.info.clone(),
+    pub fn new() -> Self {
+        Self { semaphore: None }
+    }
+
+    #[inline]
+    pub fn set_threads(&mut self, threads: usize) {
+        self.semaphore = Some(Semaphore::new(threads));
+    }
+
+    #[inline]
+    pub(crate) async fn acquire_semaphore(&self) -> Result<SemaphorePermit<'_>, AcquireError> {
+        match &self.semaphore {
+            None => Err(AcquireError::NoSemaphore),
+            Some(v) => Ok(v.acquire().await?),
         }
     }
 }
+
+pub(crate) enum AcquireError {
+    NoSemaphore,
+    AcquireError(tokio::sync::AcquireError),
+}
+
+impl From<tokio::sync::AcquireError> for AcquireError {
+    #[inline]
+    fn from(value: tokio::sync::AcquireError) -> Self {
+        Self::AcquireError(value)
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
