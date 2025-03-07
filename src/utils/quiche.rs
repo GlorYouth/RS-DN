@@ -1,22 +1,27 @@
-use std::net::SocketAddr;
 use crate::downloader::ControlConfig;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use tokio_quiche::http3::driver::{ClientH3Event, H3Event, InboundFrame, IncomingH3Headers};
 use tokio_quiche::quiche::h3;
 
-#[derive(Clone)]
-pub struct Quiche {
+struct Inner {
+    stream_id: AtomicU64,
     remote_addr: std::net::SocketAddr,
-    url: Arc<url::Url>,
+    url: url::Url,
 }
+
+#[derive(Clone)]
+pub struct Quiche(Arc<Inner>);
+
 impl Quiche {
     #[inline]
     pub fn new(remote_addr: std::net::IpAddr, remote_port: u16, url: String) -> Self {
         let url = url::Url::parse(&url).expect("url parse error");
-        Quiche {
+        Quiche(Arc::from(Inner {
+            stream_id: AtomicU64::new(0),
             remote_addr: std::net::SocketAddr::new(remote_addr, remote_port),
-            url: Arc::new(url),
-        }
+            url,
+        }))
     }
 
     pub async fn download_chunk(
@@ -28,11 +33,11 @@ impl Quiche {
     ) {
         let _permit = semaphore.acquire_semaphore().await;
 
-        let socket = match self.remote_addr {
-            SocketAddr::V4(_) => {
+        let socket = match self.0.remote_addr {
+            std::net::SocketAddr::V4(_) => {
                 tokio::net::UdpSocket::bind("0.0.0.0:0")
             }
-            SocketAddr::V6(_) => {
+            std::net::SocketAddr::V6(_) => {
                 tokio::net::UdpSocket::bind("[::]:0")
             }
         }
@@ -40,19 +45,19 @@ impl Quiche {
             .expect("Bind address failed");
 
         socket
-            .connect(self.remote_addr)
+            .connect(self.0.remote_addr)
             .await
             .expect("Connect failed");
-        let (_, mut controller) = tokio_quiche::quic::connect(socket, self.url.domain())
+        let (_, mut controller) = tokio_quiche::quic::connect(socket, self.0.url.domain())
             .await
             .expect("Connect failed");
 
         controller
             .request_sender()
             .send(tokio_quiche::http3::driver::NewClientRequest {
-                request_id: rand::random(),
+                request_id: self.0.stream_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
                 headers: vec![
-                    h3::Header::new(b":path", self.url.path().as_ref()),
+                    h3::Header::new(b":path", self.0.url.path().as_ref()),
                     h3::Header::new(b":method", b"GET"),
                 ],
                 body_writer: None,
