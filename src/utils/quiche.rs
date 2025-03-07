@@ -76,10 +76,17 @@ impl Quiche {
                         }
                     }
                 }
+
                 ClientH3Event::Core(H3Event::BodyBytesReceived { fin: true, .. }) => {
                     panic!("inbound body bytes received, exiting");
                 }
-                _ => panic!("Received unknown body event"),
+                ClientH3Event::Core(event) => {
+                    println!("event: {:?}", event);
+                },
+                ClientH3Event::NewOutboundRequest {
+                    stream_id: _,
+                    request_id,
+                } => println!("NewOutboundRequest received: {:?}, request_id: {:?}", request_id, request_id),
             }
         }
         tx.send((start, bytes::Bytes::copy_from_slice(&buf)))
