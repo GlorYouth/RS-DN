@@ -37,7 +37,9 @@ impl ParallelDownloader {
 
         let info = Arc::new(BlockInfo::new(ELEMENT_SIZE, 16, total_size));
 
-        let config = ControlConfig::new(threads);
+        let mut config = ControlConfig::new();
+        config.set_threads(threads);
+        let config = Arc::new(config);
 
         let (tx, rx) = tokio::sync::mpsc::channel::<(usize, bytes::Bytes)>(50);
         let mut tasks = Vec::with_capacity(total_element_counts + 1);
