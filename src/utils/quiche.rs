@@ -35,7 +35,7 @@ impl Quiche {
             .connect(self.remote_addr)
             .await
             .expect("Connect failed");
-        let (_, mut controller) = tokio_quiche::quic::connect(socket, None)
+        let (_, mut controller) = tokio_quiche::quic::connect(socket, self.url.domain())
             .await
             .expect("Connect failed");
 
@@ -43,7 +43,10 @@ impl Quiche {
             .request_sender()
             .send(tokio_quiche::http3::driver::NewClientRequest {
                 request_id: 0,
-                headers: vec![h3::Header::new(b":method", b"GET")],
+                headers: vec![
+                    h3::Header::new(b":path", self.url.path().as_ref()),
+                    h3::Header::new(b":method", b"GET"),
+                ],
                 body_writer: None,
             })
             .unwrap();
