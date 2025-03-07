@@ -1,6 +1,6 @@
-mod chunked_buffer;
+mod buf;
 mod req;
 
-pub(crate) use chunked_buffer::BlockInfo;
-pub(crate) use chunked_buffer::ChunkedBuffer;
+pub(crate) use buf::BlockInfo;
+pub(crate) use buf::ChunkedBuffer;
 pub(crate) use req::Request;
