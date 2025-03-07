@@ -25,7 +25,7 @@ impl Downloader {
     ) {
         match self {
             Downloader::Request(v) => v.download_chunk(start, end, tx, control).await,
-            Downloader::Quiche(v) => v.download_chunk(start, end, tx, control).await
+            Downloader::Quiche(v) => v.download_chunk(start, end, tx, control).await,
         }
     }
 }
@@ -176,7 +176,6 @@ impl From<tokio::sync::AcquireError> for AcquireError {
         Self::AcquireError(value)
     }
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -1,6 +1,7 @@
 use crate::downloader::ControlConfig;
 use std::sync::Arc;
-use tokio_quiche::http3::driver::{InboundFrame, IncomingH3Headers};
+use tokio_quiche::http3::driver::{ClientH3Event, H3Event, InboundFrame, IncomingH3Headers};
+use tokio_quiche::quiche::h3;
 
 #[derive(Clone)]
 pub struct Quiche {
@@ -25,9 +26,6 @@ impl Quiche {
         semaphore: Arc<ControlConfig>,
     ) {
         let _permit = semaphore.acquire_semaphore().await;
-
-        use tokio_quiche::http3::driver::{ClientH3Event, H3Event};
-        use tokio_quiche::quiche::h3;
 
         let socket = tokio::net::UdpSocket::bind("0.0.0.0:0")
             .await
@@ -55,11 +53,11 @@ impl Quiche {
         while let Some(event) = controller.event_receiver_mut().recv().await {
             match event {
                 ClientH3Event::Core(H3Event::IncomingHeaders(IncomingH3Headers {
-                                                                 stream_id: _,
-                                                                 headers: _,
-                                                                 mut recv,
-                                                                 ..
-                                                             })) => {
+                    stream_id: _,
+                    headers: _,
+                    mut recv,
+                    ..
+                })) => {
                     'body: while let Some(frame) = recv.recv().await {
                         match frame {
                             InboundFrame::Body(pooled, fin) => {
