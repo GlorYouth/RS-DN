@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use std::sync::Arc;
-use tokio::sync::{Semaphore, SemaphorePermit};
 use tokio::sync::mpsc::Sender;
+use tokio::sync::{Semaphore, SemaphorePermit};
 
 #[derive(Clone)]
 pub struct Request {
@@ -25,7 +25,7 @@ impl Request {
         control: Arc<ControlConfig>,
     ) {
         use futures::TryFutureExt;
-        
+
         let _ = control.acquire_semaphore();
         let range = format!("bytes={}-{}", start, end);
         let mut retries = 0;
@@ -60,8 +60,8 @@ pub struct ControlConfig {
 
 impl ControlConfig {
     #[inline]
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self { semaphore: None })
+    pub fn new() -> Self {
+        Self { semaphore: None }
     }
 
     #[inline]
@@ -73,9 +73,7 @@ impl ControlConfig {
     async fn acquire_semaphore(&self) -> Result<SemaphorePermit<'_>, AcquireError> {
         match &self.semaphore {
             None => Err(AcquireError::NoSemaphore),
-            Some(v) => {
-                Ok(v.acquire().await?)
-            }
+            Some(v) => Ok(v.acquire().await?),
         }
     }
 }

@@ -1,4 +1,5 @@
 mod buf;
+mod quiche;
 mod req;
 
 pub(crate) use buf::BlockInfo;
