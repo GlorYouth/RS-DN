@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use crate::downloader::ControlConfig;
 use std::sync::Arc;
 use tokio_quiche::http3::driver::{ClientH3Event, H3Event, InboundFrame, IncomingH3Headers};
@@ -27,7 +28,14 @@ impl Quiche {
     ) {
         let _permit = semaphore.acquire_semaphore().await;
 
-        let socket = tokio::net::UdpSocket::bind("0.0.0.0:0")
+        let socket = match self.remote_addr {
+            SocketAddr::V4(_) => {
+                tokio::net::UdpSocket::bind("0.0.0.0:0")
+            }
+            SocketAddr::V6(_) => {
+                tokio::net::UdpSocket::bind("[::]:0")
+            }
+        }
             .await
             .expect("Bind address failed");
 
@@ -42,7 +50,7 @@ impl Quiche {
         controller
             .request_sender()
             .send(tokio_quiche::http3::driver::NewClientRequest {
-                request_id: 0,
+                request_id: rand::random(),
                 headers: vec![
                     h3::Header::new(b":path", self.url.path().as_ref()),
                     h3::Header::new(b":method", b"GET"),
@@ -55,38 +63,50 @@ impl Quiche {
 
         while let Some(event) = controller.event_receiver_mut().recv().await {
             match event {
-                ClientH3Event::Core(H3Event::IncomingHeaders(IncomingH3Headers {
-                    stream_id: _,
-                    headers: _,
-                    mut recv,
-                    ..
-                })) => {
+                // 处理响应头事件，并进入 body 的处理分支
+                ClientH3Event::Core(
+                    H3Event::IncomingHeaders(
+                        IncomingH3Headers {
+                            stream_id: _,
+                            headers: _,
+                            mut recv,
+                            ..
+                        },
+                    ),
+                ) => {
                     'body: while let Some(frame) = recv.recv().await {
                         match frame {
                             InboundFrame::Body(pooled, fin) => {
+                                println!("body: {:?}", pooled);
+                                buf.extend_from_slice(&pooled);
                                 if fin {
-                                    println!("received full body, exiting");
                                     break 'body;
                                 }
-                                buf.extend_from_slice(&pooled[..]);
                             }
                             InboundFrame::Datagram(_) => {
-                                panic!("received datagram");
+                                println!("received datagram");
                             }
                         }
                     }
                 }
-
-                ClientH3Event::Core(H3Event::BodyBytesReceived { fin: true, .. }) => {
-                    panic!("inbound body bytes received, exiting");
+                // 如果收到 BodyBytesReceived 且 fin 为 true，则认为整个响应结束
+                ClientH3Event::Core(
+                    H3Event::BodyBytesReceived { fin: true, .. },
+                ) => {
+                    println!("received body bytes");
+                    break;
                 }
+                // 其它 Core 事件仅做日志输出
                 ClientH3Event::Core(event) => {
-                    println!("event: {:?}", event);
-                },
+                    println!("received core event: {:?}", event);
+                }
+                // 对于新发起的出站请求，也打印相关信息
                 ClientH3Event::NewOutboundRequest {
                     stream_id: _,
                     request_id,
-                } => println!("NewOutboundRequest received: {:?}, request_id: {:?}", request_id, request_id),
+                } => {
+                    println!("new outbound request: {:?}", request_id);
+                }
             }
         }
         tx.send((start, bytes::Bytes::copy_from_slice(&buf)))
