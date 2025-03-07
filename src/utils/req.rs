@@ -22,11 +22,11 @@ impl Request {
         start: usize,
         end: usize,
         tx: Sender<(usize, Bytes)>,
-        semaphore: Arc<Semaphore>,
+        control: Arc<ControlConfig>,
     ) {
         use futures::TryFutureExt;
 
-        let _permit = semaphore.acquire().await;
+        let _permit = control.semaphore.acquire().await;
         let range = format!("bytes={}-{}", start, end);
         let mut retries = 0;
         while IntoFuture::into_future(
@@ -51,5 +51,18 @@ impl Request {
             tokio::time::sleep(std::time::Duration::from_secs(retries)).await;
             retries += 1;
         }
+    }
+}
+
+pub struct ControlConfig {
+    semaphore: Semaphore,
+}
+
+impl ControlConfig {
+    #[inline]
+    pub fn new(threads: usize) -> Arc<Self> {
+        Arc::new(Self {
+            semaphore: Semaphore::new(threads),
+        })
     }
 }

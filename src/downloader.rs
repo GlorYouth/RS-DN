@@ -1,6 +1,4 @@
-// use lazy_static::lazy_static;
-// use regex::Regex;
-use crate::utils::{BlockInfo, ChunkedBuffer};
+use crate::utils::{BlockInfo, ChunkedBuffer, ControlConfig};
 use std::sync::Arc;
 
 const ELEMENT_SIZE: usize = 6 * 1024 * 1024; // 每个最小元素大小为6MB
@@ -39,12 +37,12 @@ impl ParallelDownloader {
 
         let info = Arc::new(BlockInfo::new(ELEMENT_SIZE, 16, total_size));
 
+        let config = ControlConfig::new(threads);
+
         let (tx, rx) = tokio::sync::mpsc::channel::<(usize, bytes::Bytes)>(50);
         let mut tasks = Vec::with_capacity(total_element_counts + 1);
 
         let write = Self::write(self.output_path.clone(), rx, info).await;
-
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(threads)); // 限制为20并发
 
         for i in 0..total_element_counts {
             let start = i * ELEMENT_SIZE;
@@ -55,7 +53,7 @@ impl ParallelDownloader {
                 start,
                 end,
                 tx.clone(),
-                semaphore.clone(),
+                config.clone(),
             ));
             tasks.push(task);
         }
