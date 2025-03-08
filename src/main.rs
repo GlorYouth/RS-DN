@@ -18,7 +18,7 @@ fn main() {
             "https://alist.gloryouth.com/d/outer/edu/%E6%88%90%E7%89%87/%E8%8A%82%E7%9B%AE1_%E6%94%B9_ai.mp4".into(), // https://alist.gloryouth.com/d/outer/edu/%E6%88%90%E7%89%87/%E8%8A%82%E7%9B%AE1_%E6%94%B9_ai.mp4
             path.into(),
         ).await
-        .start(20)
+        .start(1)
         .await;
         let mut hasher = Md5::new();
         let file = std::fs::File::open(path).expect("Failed to open output file");

@@ -45,6 +45,7 @@ impl ParallelDownloader {
             .send()
             .await
             .expect("error during request");
+
         let downloader = match response.headers().get("alt-svc") {
             None => Downloader::Request(Request::new(client, url)),
             Some(value) => {
@@ -56,11 +57,7 @@ impl ParallelDownloader {
                 let port = HASHTAG_REGEX.captures(value.to_str().unwrap()).unwrap()[1]
                     .parse::<u16>()
                     .unwrap();
-                Downloader::Quiche(Quiche::new(
-                    response.remote_addr().expect("No remote addr").ip(),
-                    port,
-                    url,
-                ))
+                Downloader::Quiche(Quiche::new(response.url().to_owned(), port))
             }
         };
         let total_size = response
