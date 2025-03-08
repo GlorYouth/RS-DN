@@ -141,14 +141,9 @@ impl H3Get {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     #[tokio::test]
     async fn test() {
-        let vec = H3Get::new("https://stumail-my.sharepoint.cn/personal/23cyding_stu_edu_cn/_layouts/15/download.aspx?UniqueId=6e852f18-5d26-4031-b060-58c39204e976&Translate=false&tempauth=v1.eyJzaXRlaWQiOiJmNDQ2
-OTUwMy02N2JhLTQwNjMtODI3ZS0yN2Y4NzEzM2M2OTQiLCJhcHBfZGlzcGxheW5hbWUiOiJBbGlzdCIsImFwcGlkIjoiNTYxNmViNTEtMmI3ZS00ZTRkLTlmZGUtODczOGFlNjg1YWY0IiwiYXVkIjoiMDAwMDAwMDMtMDAwMC0wZmYxLWNlMD
-AtMDAwMDAwMDAwMDAwL3N0dW1haWwtbXkuc2hhcmVwb2ludC5jbkAxM2YxYTA1ZC02NTY3LTQ4OWQtOTlmMi02ZTRkYTYwOTU2NjciLCJleHAiOiIxNzQxNDMxNzkyIn0.CgoKBHNuaWQSAjY0EgsI8K_Kg8-M7z0QBRoMNDAuNzIuNzQuMTk2
-KixLcmpoTkpkamkreGJ4aTVTSTh6MWl4MGdsbWI1R215SXdKQ0t1NHRwR0NNPTCVATgBQhChiHYk0zAAACUky2FkfZ4hShBoYXNoZWRwcm9vZnRva2VuUghbImttc2kiXXIpMGguZnxtZW1iZXJzaGlwfDEwMDMzMjMwZWM2MjFhNzNAbGl2ZS
-5jb216ATKCARIJXaDxE2dlnUgRmfJuTaYJVmeSAQbmmajmtIuaAQPkuIGiARMyM2N5ZGluZ0BzdHUuZWR1LmNuqgEQMTAwMzMyMzBFQzYyMUE3M7IBDmFsbGZpbGVzLndyaXRlyAEB.uNtc2n3Z2NjzMhbAPgLNgmqnmzfu3f5k6hnujG-niGQ&ApiVersion=2.0".parse().unwrap(), 443).send_with_header(vec![
+        let vec = H3Get::new("".parse().unwrap(), 443).send_with_header(vec![
             h3::Header::new(b":range", b"bytes=0-100")
         ]).await;
     println!("{:#?}", String::from_utf8_lossy(&vec));

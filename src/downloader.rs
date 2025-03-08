@@ -1,19 +1,25 @@
-use crate::utils::{BlockInfo, ChunkedBuffer, Quiche, Request};
-use bytes::Bytes;
-use lazy_static::lazy_static;
-use regex::Regex;
+use crate::utils::{BlockInfo, ChunkedBuffer, Request};
 use std::sync::Arc;
-use tokio::sync::mpsc::Sender;
 use tokio::sync::{Semaphore, SemaphorePermit};
+#[cfg(feature = "h3")]
+use {
+    crate::utils::Quiche,
+    bytes::Bytes,
+    lazy_static::lazy_static,
+    regex::Regex,
+    tokio::sync::mpsc::Sender
+};
 
 const ELEMENT_SIZE: usize = 6 * 1024 * 1024; // 每个最小元素大小为6MB
 
 #[derive(Clone)]
+#[cfg(feature = "h3")]
 pub enum Downloader {
     Request(Request),
     Quiche(Quiche),
 }
 
+#[cfg(feature = "h3")]
 impl Downloader {
     #[inline]
     async fn download_chunk(
@@ -33,7 +39,10 @@ impl Downloader {
 #[derive(Clone)]
 pub struct ParallelDownloader {
     output_path: Arc<String>,
+    #[cfg(feature = "h3")]
     downloader: Downloader,
+    #[cfg(not(feature = "h3"))]
+    downloader: Request,
     info: Arc<BlockInfo>,
 }
 
@@ -46,6 +55,7 @@ impl ParallelDownloader {
             .await
             .expect("error during request");
 
+        #[cfg(feature = "h3")]
         let downloader = match response.headers().get("alt-svc") {
             None => Downloader::Request(Request::new(client, url)),
             Some(value) => {
@@ -60,6 +70,10 @@ impl ParallelDownloader {
                 Downloader::Quiche(Quiche::new(response.url().to_owned(), port))
             }
         };
+
+        #[cfg(not(feature = "h3"))]
+        let downloader = Request::new(client, url);
+
         let total_size = response
             .headers()
             .get("Content-Length")
