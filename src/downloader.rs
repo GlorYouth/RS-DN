@@ -4,7 +4,6 @@ use tokio::sync::{Semaphore, SemaphorePermit};
 #[cfg(feature = "h3")]
 use {
     crate::utils::Quiche,
-    bytes::Bytes,
     lazy_static::lazy_static,
     regex::Regex,
     tokio::sync::mpsc::Sender
@@ -188,7 +187,7 @@ impl From<tokio::sync::AcquireError> for AcquireError {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "h3"))]
 mod tests {
     use lazy_static::lazy_static;
     use regex::Regex;
